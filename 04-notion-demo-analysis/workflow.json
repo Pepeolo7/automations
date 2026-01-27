@@ -1,0 +1,312 @@
+{
+  "name": "Notion Demo Analysis",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-352, 16],
+      "id": "hourly-trigger",
+      "name": "Hourly Trigger"
+    },
+    {
+      "parameters": {
+        "url": "https://slack.com/api/conversations.history",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "slackApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "channel",
+              "value": "YOUR_TYPEFORM_CHANNEL_ID"
+            },
+            {
+              "name": "oldest",
+              "value": "={{ Math.floor(Date.now() / 1000) - (24 * 60 * 60) }}"
+            },
+            {
+              "name": "limit",
+              "value": "50"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [-144, 16],
+      "id": "slack-get-messages",
+      "name": "Slack: Get Messages",
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "typeform-filter",
+              "leftValue": "={{ $json.messages[0].text }}",
+              "rightValue": "Request Demo / Enterprise Plan",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [96, 16],
+      "id": "filter-typeform",
+      "name": "Filter: Typeform Only"
+    },
+    {
+      "parameters": {
+        "jsCode": "const messages = $input.first().json.messages || [];\n\nreturn messages.map(msg => {\n  const text = msg.text || '';\n  \n  if (!text.includes('Request Demo / Enterprise Plan')) {\n    return null;\n  }\n  \n  const data = {\n    slack_ts: msg.ts,\n    company: '',\n    full_name: '',\n    email: '',\n    company_size: '',\n    tell_us_more: '',\n    tech_stack: '',\n    score: 0,\n    processed_at: new Date().toISOString()\n  };\n  \n  const companyMatch = text.match(/\\*What is your company called\\?\\*\\n([^*]+?)(?=\\s*\\*What)/);\n  if (companyMatch) data.company = companyMatch[1].trim();\n  \n  const nameMatch = text.match(/\\*What is your name\\?\\*\\n([^*]+?)(?=\\s*\\*What)/);\n  if (nameMatch) data.full_name = nameMatch[1].trim();\n  \n  const emailMatch = text.match(/\\*What is your email\\?\\*\\n<?(?:mailto:)?([^|>\\s]+)/);\n  if (emailMatch) data.email = emailMatch[1].trim();\n  \n  const sizeMatch = text.match(/\\*How many people.*\\?\\*\\n([^*]+?)(?=\\s*\\*|$)/);\n  if (sizeMatch) data.company_size = sizeMatch[1].trim();\n  \n  const moreMatch = text.match(/\\*Tell us more about.*\\*\\n([^*]+?)(?=\\s*\\*Your Tech Stack|$)/);\n  if (moreMatch) data.tell_us_more = moreMatch[1].trim();\n  \n  const techMatch = text.match(/\\*Your Tech Stack\\*\\n([^*]+?)(?=\\s*View results|$)/);\n  if (techMatch) data.tech_stack = techMatch[1].trim();\n  \n  // Basic scoring\n  const sizeNum = parseInt(data.company_size) || 0;\n  if (sizeNum >= 100) data.score = 5;\n  else if (sizeNum >= 50) data.score = 4;\n  else if (sizeNum >= 20) data.score = 3;\n  else if (sizeNum >= 5) data.score = 2;\n  else data.score = 1;\n  \n  return { json: data };\n}).filter(item => item !== null && item.json.email);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [320, 16],
+      "id": "parse-typeform",
+      "name": "Parse Typeform Data"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "You are a Sales Analyst at MeetGeek.\n\nAnalyze this demo request and provide insights.\n\nDEMO REQUEST DATA:\n- Company: {{ $json.company }}\n- Name: {{ $json.full_name }}\n- Email: {{ $json.email }}\n- Company Size: {{ $json.company_size }}\n- Request Details: {{ $json.tell_us_more }}\n- Tech Stack: {{ $json.tech_stack }}\n\nANALYZE AND PROVIDE:\n\n1. **Urgency Level** (hot/warm/cold):\n   - HOT: Explicit timeline, mentions \"evaluating\", \"ready to buy\", urgent language\n   - WARM: Genuine interest, specific use case, reasonable company size\n   - COLD: Vague interest, very small company, or tire-kicker signals\n\n2. **Use Case Summary**: Brief description of their likely primary use case\n\n3. **Key Notes**: Important details for the sales call (integrations needed, team size, decision maker status)",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [544, 16],
+      "id": "ai-agent",
+      "name": "AI Agent: Analyze Lead"
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [544, 240],
+      "id": "openai-model",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "YOUR_OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "outputParser": {
+          "__rl": true,
+          "value": "structuredOutputParser",
+          "mode": "id"
+        },
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"urgency\": {\n      \"type\": \"string\",\n      \"enum\": [\"hot\", \"warm\", \"cold\"]\n    },\n    \"use_case\": {\n      \"type\": \"string\"\n    },\n    \"key_notes\": {\n      \"type\": \"string\"\n    }\n  },\n  \"required\": [\"urgency\", \"use_case\", \"key_notes\"]\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [768, 240],
+      "id": "output-parser",
+      "name": "Structured Output Parser"
+    },
+    {
+      "parameters": {
+        "jsCode": "const aiResponse = $input.first().json;\nconst originalData = $('Parse Typeform Data').item.json;\n\nlet parsed;\ntry {\n  parsed = typeof aiResponse.output === 'string' \n    ? JSON.parse(aiResponse.output) \n    : aiResponse.output;\n} catch (e) {\n  parsed = { urgency: 'warm', use_case: 'General interest', key_notes: 'Needs manual review' };\n}\n\nreturn [{\n  json: {\n    ...originalData,\n    urgency: parsed.urgency,\n    use_case: parsed.use_case,\n    key_notes: parsed.key_notes\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [992, 16],
+      "id": "parse-ai",
+      "name": "Parse AI Response"
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "create",
+        "databaseId": {
+          "__rl": true,
+          "value": "YOUR_NOTION_DATABASE_ID",
+          "mode": "id"
+        },
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Company",
+              "title": "={{ $json.company }}"
+            },
+            {
+              "key": "Size",
+              "richTextValue": "={{ $json.company_size }}"
+            },
+            {
+              "key": "Urgency",
+              "selectValue": "={{ $json.urgency }}"
+            },
+            {
+              "key": "Use-case",
+              "richTextValue": "={{ $json.use_case }}"
+            },
+            {
+              "key": "Tech stack",
+              "richTextValue": "={{ $json.tech_stack }}"
+            },
+            {
+              "key": "Key Notes",
+              "richTextValue": "={{ $json.key_notes }}"
+            },
+            {
+              "key": "Potential",
+              "numberValue": "={{ $json.score }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [1216, 16],
+      "id": "notion-create",
+      "name": "Notion: Create Entry",
+      "credentials": {
+        "notionApi": {
+          "id": "YOUR_NOTION_CREDENTIAL_ID",
+          "name": "Notion account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Hourly Trigger": {
+      "main": [
+        [
+          {
+            "node": "Slack: Get Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack: Get Messages": {
+      "main": [
+        [
+          {
+            "node": "Filter: Typeform Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Typeform Only": {
+      "main": [
+        [
+          {
+            "node": "Parse Typeform Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Typeform Data": {
+      "main": [
+        [
+          {
+            "node": "AI Agent: Analyze Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent: Analyze Lead": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent: Analyze Lead",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent: Analyze Lead",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Notion: Create Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "Sales"
+    },
+    {
+      "name": "Notion"
+    },
+    {
+      "name": "Demo"
+    }
+  ]
+}

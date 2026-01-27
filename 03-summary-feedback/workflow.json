@@ -1,0 +1,411 @@
+{
+  "name": "Summary Feedback Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://slack.com/api/conversations.history",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "slackApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "channel",
+              "value": "YOUR_FEEDBACK_CHANNEL_ID"
+            },
+            {
+              "name": "oldest",
+              "value": "={{ Math.floor(Date.now() / 1000) - (24 * 60 * 60) }}"
+            },
+            {
+              "name": "limit",
+              "value": "50"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "slack-get-messages",
+      "name": "HTTP Request - Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [450, 300],
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const messages = $input.first().json.messages || [];\n\nreturn messages.map(msg => {\n  const text = msg.text || '';\n  const data = {\n    slack_ts: msg.ts,\n    feedback_text: '',\n    rating: '',\n    user_email: '',\n    user_role: '',\n    meeting_id: '',\n    company_size: 0,\n    is_negative: false,\n    processed_at: new Date().toISOString()\n  };\n  \n  if (!msg.bot_id) {\n    return null;\n  }\n  \n  const feedbackMatch = text.match(/\\*How can we make AI Summary better for you\\?\\*\\n([^*]+?)(?=\\s*\\*|$)/);\n  if (feedbackMatch) {\n    data.feedback_text = feedbackMatch[1].trim();\n  }\n  \n  const ratingMatch = text.match(/\\*What do you think about the summary\\?\\*\\n([^*]+?)(?=\\s*\\*|$)/) || text.match(/\\*rating\\*\\n(up|down)/);\n  if (ratingMatch) {\n    const rating = ratingMatch[1].trim().toLowerCase();\n    data.rating = rating.includes('down') || rating.includes('👎') ? 'down' : 'up';\n  }\n  \n  const emailMatch = text.match(/\\*user_email\\*\\n<?(?:mailto:)?([^|>\\s]+)/) || text.match(/\\*Email:\\*\\n<?(?:mailto:)?([^|>\\s]+)/);\n  if (emailMatch) {\n    data.user_email = emailMatch[1].trim();\n  }\n  \n  const roleMatch = text.match(/\\*user_role\\*\\n(\\w+)/) || text.match(/\\*Plan:\\*\\n(\\w+)/);\n  if (roleMatch) {\n    data.user_role = roleMatch[1].trim();\n  }\n  \n  const meetingIdMatch = text.match(/\\*meeting_id\\*\\n([a-f0-9-]+)/);\n  if (meetingIdMatch) {\n    data.meeting_id = meetingIdMatch[1].trim();\n  }\n  \n  const companySizeMatch = text.match(/\\*user_company_size\\*\\n(\\d+)/);\n  if (companySizeMatch) {\n    data.company_size = parseInt(companySizeMatch[1]);\n  }\n  \n  data.is_negative = data.rating === 'down';\n  data.is_paying = ['pro', 'business', 'trial'].includes(data.user_role.toLowerCase());\n  \n  return { json: data };\n}).filter(item => item !== null && item.json.feedback_text);"
+      },
+      "id": "parse-feedback",
+      "name": "Parse Feedback Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-negative",
+              "leftValue": "={{ $json.is_negative }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-negative",
+      "name": "Filter: Negative Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "You are a Customer Success specialist at MeetGeek, an AI meeting assistant.\n\nAnalyze this negative feedback and generate a personalized response.\n\nFEEDBACK DATA:\n- User Email: {{ $json.user_email }}\n- User Plan: {{ $json.user_role }}\n- Company Size: {{ $json.company_size }}\n- Meeting ID: {{ $json.meeting_id }}\n- Feedback: {{ $json.feedback_text }}\n\nCATEGORIZE INTO:\n1. SUMMARY_TOO_SHORT - Missing details, not comprehensive enough\n2. INACCURACY - Wrong information, missed conclusions\n3. FORMAT_REQUEST - Wants Word/PDF export, different format\n4. TRANSLATION_ISSUE - Wrong language output\n5. TRANSCRIPTION_QUALITY - Name/acronym recognition issues\n6. FEATURE_REQUEST - Wants new functionality\n7. VAGUE_NEGATIVE - Generic negative without specifics\n\nRESPONSE GUIDELINES:\n- SUMMARY_TOO_SHORT: Mention Detailed Notes view, custom templates, Ask AI feature\n- INACCURACY: Apologize, ask for specifics, offer to review\n- FORMAT_REQUEST: Explain export options, log feature request\n- TRANSLATION_ISSUE: Check language settings, offer regenerate\n- TRANSCRIPTION_QUALITY: Explain Vocabulary feature for custom names\n- FEATURE_REQUEST: Thank them, confirm it's logged\n- VAGUE_NEGATIVE: Ask for specifics to help improve\n\nPRIORITY:\n- HIGH: Paying customer (pro/business) + accuracy/quality issue\n- MEDIUM: Free user + specific complaint\n- LOW: Vague feedback or feature request\n\nWRITE THE EMAIL IN THE SAME LANGUAGE AS THE FEEDBACK.",
+        "options": {}
+      },
+      "id": "ai-agent",
+      "name": "AI Agent: Categorize & Respond",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "options": {
+          "temperature": 0.5
+        }
+      },
+      "id": "openai-model",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [1050, 520],
+      "credentials": {
+        "openAiApi": {
+          "id": "YOUR_OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "outputParser": {
+          "__rl": true,
+          "value": "structuredOutputParser",
+          "mode": "id"
+        },
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"category\": {\n      \"type\": \"string\",\n      \"enum\": [\"SUMMARY_TOO_SHORT\", \"INACCURACY\", \"FORMAT_REQUEST\", \"TRANSLATION_ISSUE\", \"TRANSCRIPTION_QUALITY\", \"FEATURE_REQUEST\", \"VAGUE_NEGATIVE\"]\n    },\n    \"priority\": {\n      \"type\": \"string\",\n      \"enum\": [\"HIGH\", \"MEDIUM\", \"LOW\"]\n    },\n    \"subject\": {\n      \"type\": \"string\"\n    },\n    \"body\": {\n      \"type\": \"string\"\n    }\n  },\n  \"required\": [\"category\", \"priority\", \"subject\", \"body\"]\n}"
+      },
+      "id": "output-parser",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [1274, 520]
+    },
+    {
+      "parameters": {
+        "jsCode": "const aiResponse = $input.first().json;\nconst originalData = $('Filter: Negative Only').item.json;\n\nlet parsed;\ntry {\n  parsed = typeof aiResponse.output === 'string' \n    ? JSON.parse(aiResponse.output) \n    : aiResponse.output;\n} catch (e) {\n  parsed = { \n    category: 'VAGUE_NEGATIVE', \n    priority: 'MEDIUM', \n    subject: 'Thanks for your feedback',\n    body: 'Thank you for sharing your feedback. Could you provide more details so we can better understand and address your concerns?\\n\\nBest regards,\\nPedro'\n  };\n}\n\nreturn [{\n  json: {\n    ...originalData,\n    category: parsed.category,\n    priority: parsed.priority,\n    email_subject: parsed.subject,\n    email_body: parsed.body\n  }\n}];"
+      },
+      "id": "parse-ai",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1274, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.intercom.io/contacts/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Intercom-Version",
+              "value": "2.11"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"query\": {\n    \"field\": \"email\",\n    \"operator\": \"=\",\n    \"value\": \"{{ $json.user_email }}\"\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "intercom-search",
+      "name": "Intercom: Search Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1498, 300],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "YOUR_INTERCOM_CREDENTIAL_ID",
+          "name": "Intercom Bearer Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-contact",
+              "leftValue": "={{ $json.data?.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-contact",
+      "name": "Filter: Has Contact",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [1722, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.intercom.io/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Intercom-Version",
+              "value": "2.11"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message_type\": \"email\",\n  \"subject\": \"{{ $('Parse AI Response').item.json.email_subject }}\",\n  \"body\": \"{{ $('Parse AI Response').item.json.email_body.replace(/\\n/g, '<br>') }}\",\n  \"template\": \"plain\",\n  \"from\": {\n    \"type\": \"admin\",\n    \"id\": \"YOUR_INTERCOM_ADMIN_ID\"\n  },\n  \"to\": {\n    \"type\": \"contact\",\n    \"id\": \"{{ $json.data[0].id }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "intercom-send",
+      "name": "Intercom: Send Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1946, 300],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "YOUR_INTERCOM_CREDENTIAL_ID",
+          "name": "Intercom Bearer Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"📋 Feedback Response Sent\",\n  \"blocks\": [\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Feedback Response Sent*\\n• Email: {{ $('Parse AI Response').item.json.user_email }}\\n• Category: {{ $('Parse AI Response').item.json.category }}\\n• Priority: {{ $('Parse AI Response').item.json.priority }}\\n• Plan: {{ $('Parse AI Response').item.json.user_role }}\"\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "slack-notify",
+      "name": "Slack: Notify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2170, 300]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Slack": {
+      "main": [
+        [
+          {
+            "node": "Parse Feedback Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Feedback Data": {
+      "main": [
+        [
+          {
+            "node": "Filter: Negative Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Negative Only": {
+      "main": [
+        [
+          {
+            "node": "AI Agent: Categorize & Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent: Categorize & Respond": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent: Categorize & Respond",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent: Categorize & Respond",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Intercom: Search Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intercom: Search Contact": {
+      "main": [
+        [
+          {
+            "node": "Filter: Has Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Has Contact": {
+      "main": [
+        [
+          {
+            "node": "Intercom: Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intercom: Send Email": {
+      "main": [
+        [
+          {
+            "node": "Slack: Notify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "Feedback"
+    },
+    {
+      "name": "Customer Success"
+    }
+  ]
+}

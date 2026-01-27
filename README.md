@@ -1,6 +1,6 @@
-# MeetGeek n8n Automations
+# n8n Automations
 
-Customer Success automation workflows for MeetGeek, built with n8n.
+Customer Success automation workflows, built with n8n.
 
 ## 📂 Workflows
 
@@ -62,4 +62,4 @@ Customer Success automation workflows for MeetGeek, built with n8n.
 
 ## 📄 License
 
-Internal use only - MeetGeek Customer Success Team
+Internal use only - Customer Success Team

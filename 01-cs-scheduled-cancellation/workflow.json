@@ -1,0 +1,414 @@
+{
+  "name": "CS Scheduled Cancellation - Win-Back Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Hourly Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-600, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://slack.com/api/conversations.history",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "slackApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "channel",
+              "value": "YOUR_STRIPE_CHANNEL_ID"
+            },
+            {
+              "name": "oldest",
+              "value": "={{ Math.floor(Date.now() / 1000) - (2 * 24 * 60 * 60) }}"
+            },
+            {
+              "name": "limit",
+              "value": "50"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "slack-get-messages",
+      "name": "Slack: Get Messages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [-376, 300],
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const messages = items[0].json.messages;\n\nconst determinePlanType = (mrr, planType) => {\n  const mrrNum = parseFloat(mrr);\n  const isMonthly = planType?.toLowerCase().includes('monthly');\n  \n  if (mrrNum === 39 && isMonthly) return { plan: 'Business', isLegacy: true };\n  if (mrrNum === 29 && !isMonthly) return { plan: 'Business', isLegacy: false };\n  if (mrrNum === 19 && isMonthly) return { plan: 'Pro', isLegacy: false };\n  if (mrrNum === 15 && !isMonthly) return { plan: 'Pro', isLegacy: true };\n  \n  return { plan: 'Unknown', isLegacy: false };\n};\n\nconst calculateDaysUntilCancellation = (effectiveDate) => {\n  if (!effectiveDate || effectiveDate === \"N/A\") return null;\n  \n  try {\n    const effective = new Date(effectiveDate);\n    const today = new Date();\n    const diffTime = effective - today;\n    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));\n    return diffDays;\n  } catch (error) {\n    return null;\n  }\n};\n\nreturn messages.map(msg => {\n  const data = {\n    ts: msg.ts,\n    type: msg.text,\n    customer: \"N/A\",\n    email: \"N/A\",\n    mrr: \"N/A\",\n    plan_type: \"N/A\",\n    effective_date: \"N/A\",\n    reason: \"N/A\",\n    comment: \"N/A\",\n    plan: \"Unknown\",\n    isLegacy: false,\n    days_until_cancellation: null\n  };\n  \n  const sectionBlock = msg.blocks?.find(b => b.type === 'section' && b.fields);\n  if (sectionBlock) {\n    sectionBlock.fields.forEach(field => {\n      const text = field.text;\n      if (text.includes(\"*Customer:*\")) data.customer = text.split('\\n')[1];\n      if (text.includes(\"*Email:*\")) data.email = text.match(/<mailto:(.*?)\\|/)?.[1] || text.split('\\n')[1];\n      if (text.includes(\"*MRR:*\")) data.mrr = text.split('\\n')[1];\n      if (text.includes(\"*Plan Type:*\")) data.plan_type = text.split('\\n')[1];\n      if (text.includes(\"*Effective Date:*\")) data.effective_date = text.split('\\n')[1];\n      if (text.includes(\"*Reason:*\")) data.reason = text.split('\\n')[1];\n    });\n  }\n  \n  const commentBlock = msg.blocks?.find(b => b.type === 'section' && b.text?.text?.includes('Comment'));\n  if (commentBlock) {\n    const commentMatch = commentBlock.text.text.match(/Comment:\\s*(.+)/s);\n    if (commentMatch) data.comment = commentMatch[1].trim();\n  }\n  \n  const planInfo = determinePlanType(data.mrr, data.plan_type);\n  data.plan = planInfo.plan;\n  data.isLegacy = planInfo.isLegacy;\n  data.days_until_cancellation = calculateDaysUntilCancellation(data.effective_date);\n  \n  return { json: data };\n}).filter(item => item.json.email !== \"N/A\");"
+      },
+      "id": "parse-cancellation",
+      "name": "Parse Cancellation Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-152, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "filter-scheduled",
+              "leftValue": "={{ $json.type }}",
+              "rightValue": "Scheduled Cancellation",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-scheduled",
+      "name": "Filter: Scheduled Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [72, 300]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "You are Pedro, a Customer Success Engineer at MeetGeek.\n\nA customer SCHEDULED their subscription cancellation and left a comment explaining why. Their cancellation hasn't taken effect yet—this is your opportunity to win them back before they leave.\n\nCUSTOMER DATA:\n- Name: {{ $json.customer }}\n- Email: {{ $json.email }}\n- Cancellation reason category: {{ $json.reason }}\n- Comment: {{ $json.comment }}\n- Plan: {{ $json.plan }} ({{ $json.plan_type }})\n- MRR: ${{ $json.mrr }}\n- Days until cancellation: {{ $json.days_until_cancellation }}\n\nRETENTION TOOLS AVAILABLE:\n- COMEBACK50: 50% off for 6 months (use selectively for price-related cancellations within 60 days)\n- Configuration call: Offer to corporate emails (non-gmail/yahoo/hotmail/outlook) for account setup/optimization\n- Direct help: Offer to resolve specific technical issues mentioned\n- Feedback request: For unclear reasons or long-term scheduled cancellations\n\nMEETGEEK CONTEXT:\n- Common complaints: bot behavior, transcription accuracy, meeting minutes quality, complexity\n- Recent improvements: New AI model (January 2026) with better accuracy and summaries\n- Capabilities: Custom templates, workflow automation, exclusion rules, HubSpot/Salesforce integration\n- Support: In-app chat (fastest) or support@meetgeek.ai\n- Calendly for calls: https://calendly.com/YOUR_CALENDLY_LINK/15min\n\nEMAIL REQUIREMENTS:\n1. Language: Respond in the SAME language as the comment\n2. Opening: \"I noticed your subscription is scheduled to cancel\" (NOT \"you cancelled\")\n3. Acknowledge: Address their specific issue briefly (1-2 sentences)\n4. Offer: Choose the most appropriate retention tool based on the situation\n5. Urgency: Reference timing if cancellation is soon\n6. Length: Under 150 words\n7. CTA: Clear next step (reply, book call at Calendly link, use code at https://meetgeek.ai/pricing)\n8. Signature: Always end with \"Best regards, Pedro\"",
+        "options": {}
+      },
+      "id": "ai-agent",
+      "name": "AI Agent: Generate Email",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [296, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "options": {
+          "temperature": 0.7
+        }
+      },
+      "id": "openai-model",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [296, 520],
+      "credentials": {
+        "openAiApi": {
+          "id": "YOUR_OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "outputParser": {
+          "__rl": true,
+          "value": "structuredOutputParser",
+          "mode": "id"
+        },
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"subject\": {\n      \"type\": \"string\",\n      \"description\": \"Email subject line\"\n    },\n    \"body\": {\n      \"type\": \"string\",\n      \"description\": \"Full email body with signature\"\n    },\n    \"tag\": {\n      \"type\": \"string\",\n      \"enum\": [\"competitor\", \"not_needed\", \"dont_use\", \"too_expensive\", \"product_issue\", \"billing\", \"other\"],\n      \"description\": \"Category tag for the cancellation reason\"\n    }\n  },\n  \"required\": [\"subject\", \"body\", \"tag\"]\n}"
+      },
+      "id": "output-parser",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [520, 520]
+    },
+    {
+      "parameters": {
+        "jsCode": "const aiResponse = $input.first().json;\nconst originalData = $('Filter: Scheduled Only').item.json;\n\nlet parsed;\ntry {\n  parsed = typeof aiResponse.output === 'string' \n    ? JSON.parse(aiResponse.output) \n    : aiResponse.output;\n} catch (e) {\n  parsed = { subject: 'Follow-up on your MeetGeek subscription', body: aiResponse.output, tag: 'other' };\n}\n\nreturn [{\n  json: {\n    ...originalData,\n    email_subject: parsed.subject,\n    email_body: parsed.body,\n    cancellation_tag: parsed.tag\n  }\n}];"
+      },
+      "id": "parse-ai",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.intercom.io/contacts/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Intercom-Version",
+              "value": "2.11"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"query\": {\n    \"field\": \"email\",\n    \"operator\": \"=\",\n    \"value\": \"{{ $json.email }}\"\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "intercom-search",
+      "name": "Intercom: Search Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [744, 300],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "YOUR_INTERCOM_CREDENTIAL_ID",
+          "name": "Intercom Bearer Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-contact",
+              "leftValue": "={{ $json.data?.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-contact",
+      "name": "Filter: Has Contact",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [968, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.intercom.io/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Intercom-Version",
+              "value": "2.11"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message_type\": \"email\",\n  \"subject\": \"{{ $('Parse AI Response').item.json.email_subject }}\",\n  \"body\": \"{{ $('Parse AI Response').item.json.email_body.replace(/\\n/g, '<br>') }}\",\n  \"template\": \"plain\",\n  \"from\": {\n    \"type\": \"admin\",\n    \"id\": \"YOUR_INTERCOM_ADMIN_ID\"\n  },\n  \"to\": {\n    \"type\": \"contact\",\n    \"id\": \"{{ $json.data[0].id }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "intercom-send",
+      "name": "Intercom: Send Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1192, 300],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "YOUR_INTERCOM_CREDENTIAL_ID",
+          "name": "Intercom Bearer Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"✅ Win-back email sent\",\n  \"blocks\": [\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Win-Back Email Sent*\\n• Customer: {{ $('Parse AI Response').item.json.customer }}\\n• Email: {{ $('Parse AI Response').item.json.email }}\\n• Tag: {{ $('Parse AI Response').item.json.cancellation_tag }}\\n• Days until cancel: {{ $('Parse AI Response').item.json.days_until_cancellation }}\"\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "slack-notify",
+      "name": "Slack: Notify Success",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1416, 300]
+    }
+  ],
+  "connections": {
+    "Hourly Trigger": {
+      "main": [
+        [
+          {
+            "node": "Slack: Get Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack: Get Messages": {
+      "main": [
+        [
+          {
+            "node": "Parse Cancellation Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Cancellation Data": {
+      "main": [
+        [
+          {
+            "node": "Filter: Scheduled Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Scheduled Only": {
+      "main": [
+        [
+          {
+            "node": "AI Agent: Generate Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent: Generate Email": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent: Generate Email",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent: Generate Email",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Intercom: Search Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intercom: Search Contact": {
+      "main": [
+        [
+          {
+            "node": "Filter: Has Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Has Contact": {
+      "main": [
+        [
+          {
+            "node": "Intercom: Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intercom: Send Email": {
+      "main": [
+        [
+          {
+            "node": "Slack: Notify Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "Customer Success"
+    },
+    {
+      "name": "Retention"
+    },
+    {
+      "name": "Win-Back"
+    }
+  ]
+}

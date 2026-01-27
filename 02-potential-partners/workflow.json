@@ -1,0 +1,672 @@
+{
+  "name": "Potential Partners Automation v4",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-800, 192]
+    },
+    {
+      "parameters": {
+        "url": "https://slack.com/api/conversations.history",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "slackApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "channel",
+              "value": "YOUR_PARTNERS_CHANNEL_ID"
+            },
+            {
+              "name": "oldest",
+              "value": "={{ Math.floor(Date.now() / 1000) - (24 * 60 * 60) }}"
+            },
+            {
+              "name": "limit",
+              "value": "50"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "slack-get-messages",
+      "name": "Slack: Get Messages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-608, 192],
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const messages = $input.first().json.messages || [];\n\nreturn messages.map(msg => {\n  const text = msg.text || '';\n  \n  if (!msg.bot_id || !text.includes('Partner with MeetGeek')) {\n    return null;\n  }\n  \n  const data = {\n    slack_ts: msg.ts,\n    thread_ts: msg.thread_ts || msg.ts,\n    reply_count: msg.reply_count || 0,\n    interest_type: '',\n    request_details: '',\n    full_name: '',\n    email: '',\n    phone: '',\n    audience_size: '',\n    licenses_considered: '',\n    additional_notes: '',\n    processed_at: new Date().toISOString()\n  };\n  \n  const interestMatch = text.match(/\\*What are you interested in\\?\\*\\n([^*]+?)(?=\\s*\\*Can you)/);\n  if (interestMatch) data.interest_type = interestMatch[1].trim();\n  \n  const requestMatch = text.match(/\\*Can you please tell us more about your request\\?\\*\\n([^*]+?)(?=\\s*\\*What's your full name)/);\n  if (requestMatch) data.request_details = requestMatch[1].trim();\n  \n  const nameMatch = text.match(/\\*What's your full name\\?\\*\\n([^*]+?)(?=\\s*\\*What's your email)/);\n  if (nameMatch) data.full_name = nameMatch[1].trim();\n  \n  const emailMatch = text.match(/\\*What's your email\\?\\*\\n<?(?:mailto:)?([^|>\\s]+)/);\n  if (emailMatch) data.email = emailMatch[1].trim();\n  \n  const phoneMatch = text.match(/\\*What's the best phone number[^*]*\\?\\*\\n([^*]+?)(?=\\s*\\*How large)/);\n  if (phoneMatch) data.phone = phoneMatch[1].trim();\n  \n  const audienceMatch = text.match(/\\*How large is your audience\\?\\*\\n([^*]+?)(?=\\s*\\*How many licenses)/);\n  if (audienceMatch) data.audience_size = audienceMatch[1].trim();\n  \n  const licensesMatch = text.match(/\\*How many licenses are you considering\\?\\*\\n([^*]+?)(?=\\s*(?:\\*|View))/);\n  if (licensesMatch) data.licenses_considered = licensesMatch[1].trim();\n  \n  const extraMatch = text.match(/\\*Anything else you'd like to share\\?\\s*\\*\\n([^*]+?)(?=\\s*View results)/);\n  if (extraMatch) data.additional_notes = extraMatch[1].trim();\n  \n  return { json: data };\n}).filter(item => item !== null && item.json.email);"
+      },
+      "id": "parse-typeform",
+      "name": "Parse Typeform Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-384, 192]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "not-replied",
+              "leftValue": "={{ $json.reply_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-not-replied",
+      "name": "Filter: Not Yet Replied",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [-160, 192]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "not-spam-1",
+              "leftValue": "={{ $json.request_details.toLowerCase() }}",
+              "rightValue": "guest post",
+              "operator": {
+                "type": "string",
+                "operation": "notContains"
+              }
+            },
+            {
+              "id": "not-spam-2",
+              "leftValue": "={{ $json.request_details.toLowerCase() }}",
+              "rightValue": "guest blog",
+              "operator": {
+                "type": "string",
+                "operation": "notContains"
+              }
+            },
+            {
+              "id": "not-spam-3",
+              "leftValue": "={{ $json.request_details.toLowerCase() }}",
+              "rightValue": "link insertion",
+              "operator": {
+                "type": "string",
+                "operation": "notContains"
+              }
+            },
+            {
+              "id": "not-spam-4",
+              "leftValue": "={{ $json.request_details.toLowerCase() }}",
+              "rightValue": "backlink",
+              "operator": {
+                "type": "string",
+                "operation": "notContains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-spam",
+      "name": "Filter: Not Spam",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [64, 192]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "You are a Partnership Manager at MeetGeek.\n\nClassify this partner inquiry and determine the appropriate response.\n\nINQUIRY DATA:\n- Name: {{ $json.full_name }}\n- Email: {{ $json.email }}\n- Interest: {{ $json.interest_type }}\n- Request: {{ $json.request_details }}\n- Audience Size: {{ $json.audience_size }}\n- Licenses Considered: {{ $json.licenses_considered }}\n- Additional Notes: {{ $json.additional_notes }}\n\nCLASSIFY INTO ONE OF THESE CATEGORIES:\n\n1. **BIG_DEAL** - Requires manual handling:\n   - Reseller/Distributor requests\n   - 10+ licenses\n   - Enterprise mentions\n   - Strategic partnerships\n   - Co-marketing requests\n   - Large audience (10k+)\n\n2. **STARTUP** - Auto-respond with STARTUP30 code:\n   - Startup discount requests\n   - Early-stage companies\n   - Small teams (1-5 licenses)\n\n3. **NONPROFIT** - Auto-respond with proof request:\n   - Non-profit organizations\n   - Educational institutions\n   - .edu emails\n   - Charity mentions\n\n4. **AFFILIATE** - Auto-respond with program details:\n   - Affiliate program interest\n   - Referral requests\n   - Commission mentions\n   - Content creators/influencers\n\nRULES:\n- Corporate email from known company + vague request = likely BIG_DEAL\n- If mentions \"evaluating\" or \"pilot\" = BIG_DEAL\n- When in doubt, classify as BIG_DEAL (safer to manual review)",
+        "options": {}
+      },
+      "id": "ai-classify",
+      "name": "AI Agent: Classify Deal",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [288, 192]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "openai-model",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [288, 412],
+      "credentials": {
+        "openAiApi": {
+          "id": "YOUR_OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "outputParser": {
+          "__rl": true,
+          "value": "structuredOutputParser",
+          "mode": "id"
+        },
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"category\": {\n      \"type\": \"string\",\n      \"enum\": [\"BIG_DEAL\", \"STARTUP\", \"NONPROFIT\", \"AFFILIATE\"]\n    },\n    \"confidence\": {\n      \"type\": \"string\",\n      \"enum\": [\"high\", \"medium\", \"low\"]\n    },\n    \"reasoning\": {\n      \"type\": \"string\"\n    }\n  },\n  \"required\": [\"category\", \"confidence\", \"reasoning\"]\n}"
+      },
+      "id": "output-parser",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [512, 412]
+    },
+    {
+      "parameters": {
+        "jsCode": "const aiResponse = $input.first().json;\nconst originalData = $('Filter: Not Spam').item.json;\n\nlet parsed;\ntry {\n  parsed = typeof aiResponse.output === 'string' \n    ? JSON.parse(aiResponse.output) \n    : aiResponse.output;\n} catch (e) {\n  parsed = { category: 'BIG_DEAL', confidence: 'low', reasoning: 'Parse error - defaulting to manual' };\n}\n\nreturn [{\n  json: {\n    ...originalData,\n    category: parsed.category,\n    confidence: parsed.confidence,\n    reasoning: parsed.reasoning\n  }\n}];"
+      },
+      "id": "parse-classification",
+      "name": "Parse Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [512, 192]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "rules": [
+            {
+              "value": "BIG_DEAL",
+              "outputKey": "big_deal"
+            },
+            {
+              "value": "STARTUP",
+              "outputKey": "startup"
+            },
+            {
+              "value": "NONPROFIT",
+              "outputKey": "nonprofit"
+            },
+            {
+              "value": "AFFILIATE",
+              "outputKey": "affiliate"
+            }
+          ]
+        },
+        "fallbackOutput": "big_deal",
+        "dataType": "string",
+        "value": "={{ $json.category }}"
+      },
+      "id": "switch-category",
+      "name": "Switch: By Category",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [736, 192]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"🚨 BIG DEAL Partner Inquiry\",\n  \"blocks\": [\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*🚨 BIG DEAL - Manual Review Required*\\n\\n*Name:* {{ $json.full_name }}\\n*Email:* {{ $json.email }}\\n*Interest:* {{ $json.interest_type }}\\n*Licenses:* {{ $json.licenses_considered }}\\n*Audience:* {{ $json.audience_size }}\\n\\n*Request:*\\n{{ $json.request_details }}\\n\\n*AI Reasoning:* {{ $json.reasoning }}\"\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "slack-big-deal",
+      "name": "Slack: Big Deal Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.intercom.io/contacts/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Intercom-Version",
+              "value": "2.11"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"query\": {\n    \"field\": \"email\",\n    \"operator\": \"=\",\n    \"value\": \"{{ $json.email }}\"\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "intercom-search-startup",
+      "name": "Intercom: Search (Startup)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 150],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "YOUR_INTERCOM_CREDENTIAL_ID",
+          "name": "Intercom Bearer Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.intercom.io/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Intercom-Version",
+              "value": "2.11"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message_type\": \"email\",\n  \"subject\": \"Your MeetGeek Startup Discount\",\n  \"body\": \"Hi {{ $('Parse Classification').item.json.full_name.split(' ')[0] }},<br><br>Thanks for reaching out about our startup program!<br><br>We're happy to offer you <strong>30% off your first year</strong> with MeetGeek.<br><br>Use code <strong>STARTUP30</strong> at checkout: <a href='https://meetgeek.ai/pricing'>meetgeek.ai/pricing</a><br><br>This applies to both Pro and Business plans.<br><br>Let me know if you have any questions!<br><br>Best regards,<br>Pedro\",\n  \"template\": \"plain\",\n  \"from\": {\n    \"type\": \"admin\",\n    \"id\": \"YOUR_INTERCOM_ADMIN_ID\"\n  },\n  \"to\": {\n    \"type\": \"contact\",\n    \"id\": \"{{ $json.data[0].id }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "intercom-startup",
+      "name": "Intercom: Startup Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1184, 150],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "YOUR_INTERCOM_CREDENTIAL_ID",
+          "name": "Intercom Bearer Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.intercom.io/contacts/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Intercom-Version",
+              "value": "2.11"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"query\": {\n    \"field\": \"email\",\n    \"operator\": \"=\",\n    \"value\": \"{{ $json.email }}\"\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "intercom-search-nonprofit",
+      "name": "Intercom: Search (Nonprofit)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 300],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "YOUR_INTERCOM_CREDENTIAL_ID",
+          "name": "Intercom Bearer Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.intercom.io/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Intercom-Version",
+              "value": "2.11"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message_type\": \"email\",\n  \"subject\": \"MeetGeek Non-Profit/Education Discount\",\n  \"body\": \"Hi {{ $('Parse Classification').item.json.full_name.split(' ')[0] }},<br><br>Thanks for your interest in MeetGeek for your organization!<br><br>We offer a <strong>30% permanent discount</strong> for non-profit organizations and educational institutions.<br><br>To activate your discount, please reply with:<br>• Proof of non-profit status (501c3 letter, .edu email, or equivalent)<br>• Your organization name<br><br>Once verified, I'll apply the discount within 24 hours.<br><br>Best regards,<br>Pedro\",\n  \"template\": \"plain\",\n  \"from\": {\n    \"type\": \"admin\",\n    \"id\": \"YOUR_INTERCOM_ADMIN_ID\"\n  },\n  \"to\": {\n    \"type\": \"contact\",\n    \"id\": \"{{ $json.data[0].id }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "intercom-nonprofit",
+      "name": "Intercom: Nonprofit Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1184, 300],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "YOUR_INTERCOM_CREDENTIAL_ID",
+          "name": "Intercom Bearer Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.intercom.io/contacts/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Intercom-Version",
+              "value": "2.11"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"query\": {\n    \"field\": \"email\",\n    \"operator\": \"=\",\n    \"value\": \"{{ $json.email }}\"\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "intercom-search-affiliate",
+      "name": "Intercom: Search (Affiliate)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 450],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "YOUR_INTERCOM_CREDENTIAL_ID",
+          "name": "Intercom Bearer Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.intercom.io/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Intercom-Version",
+              "value": "2.11"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message_type\": \"email\",\n  \"subject\": \"MeetGeek Affiliate Program\",\n  \"body\": \"Hi {{ $('Parse Classification').item.json.full_name.split(' ')[0] }},<br><br>Thanks for your interest in our affiliate program!<br><br>Here's how it works:<br>• <strong>20% recurring commission</strong> on all referred customers<br>• <strong>90-day cookie duration</strong><br>• <strong>Monthly payouts</strong> via PayPal or bank transfer<br><br>Sign up here: <a href='https://meetgeek.ai/affiliates'>meetgeek.ai/affiliates</a><br><br>Once approved, you'll get your unique referral link and dashboard access.<br><br>Let me know if you have any questions!<br><br>Best regards,<br>Pedro\",\n  \"template\": \"plain\",\n  \"from\": {\n    \"type\": \"admin\",\n    \"id\": \"YOUR_INTERCOM_ADMIN_ID\"\n  },\n  \"to\": {\n    \"type\": \"contact\",\n    \"id\": \"{{ $json.data[0].id }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "intercom-affiliate",
+      "name": "Intercom: Affiliate Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1184, 450],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "YOUR_INTERCOM_CREDENTIAL_ID",
+          "name": "Intercom Bearer Auth"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Slack: Get Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack: Get Messages": {
+      "main": [
+        [
+          {
+            "node": "Parse Typeform Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Typeform Data": {
+      "main": [
+        [
+          {
+            "node": "Filter: Not Yet Replied",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Not Yet Replied": {
+      "main": [
+        [
+          {
+            "node": "Filter: Not Spam",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Not Spam": {
+      "main": [
+        [
+          {
+            "node": "AI Agent: Classify Deal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent: Classify Deal": {
+      "main": [
+        [
+          {
+            "node": "Parse Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent: Classify Deal",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent: Classify Deal",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Classification": {
+      "main": [
+        [
+          {
+            "node": "Switch: By Category",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch: By Category": {
+      "main": [
+        [
+          {
+            "node": "Slack: Big Deal Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Intercom: Search (Startup)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Intercom: Search (Nonprofit)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Intercom: Search (Affiliate)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intercom: Search (Startup)": {
+      "main": [
+        [
+          {
+            "node": "Intercom: Startup Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intercom: Search (Nonprofit)": {
+      "main": [
+        [
+          {
+            "node": "Intercom: Nonprofit Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intercom: Search (Affiliate)": {
+      "main": [
+        [
+          {
+            "node": "Intercom: Affiliate Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "Partners"
+    },
+    {
+      "name": "Sales"
+    },
+    {
+      "name": "Automation"
+    }
+  ]
+}

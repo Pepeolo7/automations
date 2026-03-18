@@ -1,0 +1,249 @@
+{
+  "name": "Contract Analysis AI - Extraction & Review v1",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "contract-upload",
+        "options": {
+          "rawBody": false
+        },
+        "responseMode": "responseNode"
+      },
+      "id": "webhook-contract",
+      "name": "Contract Upload Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1200, 200],
+      "webhookId": "YOUR_WEBHOOK_ID"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "schedule-renewal",
+      "name": "Weekly Renewal Check (Mon 9AM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-1200, 550]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nreturn [{\n  json: {\n    contract_id: `CTR-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`,\n    file_name: input.file_name || 'contract.pdf',\n    file_url: input.file_url || '',\n    file_type: input.file_type || 'pdf',\n    raw_text: input.text_content || '',\n    submitted_by: input.submitted_by || 'system',\n    department: input.department || 'legal',\n    priority: input.priority || 'normal',\n    review_type: input.review_type || 'full',\n    upload_timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "parse-contract",
+      "name": "Parse Contract Upload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-950, 200]
+    },
+    {
+      "parameters": {
+        "text": "You are an expert contract analysis AI. Your job is to extract key terms, identify risks, and flag clauses that require legal review.\n\nCONTRACT TEXT (first 6000 characters):\n{{ $json.raw_text.substring(0, 6000) }}\n\nFILE NAME: {{ $json.file_name }}\nREVIEW TYPE: {{ $json.review_type }}\n\nEXTRACT THE FOLLOWING:\n\n1. **contract_type**: NDA | MSA | SLA | SOW | Employment | Lease | License | Amendment | Other\n2. **parties**: Array of { name, role (client/vendor/employer/employee/licensor/licensee) }\n3. **effective_date**: ISO date or null\n4. **expiration_date**: ISO date or null\n5. **auto_renewal**: { enabled: true/false, notice_period_days: number, renewal_term: string }\n6. **total_value**: { amount: number, currency: string, payment_terms: string } or null\n7. **key_terms**: Array of { clause_name, summary, section_reference }\n8. **obligations**: Array of { party, obligation, deadline }\n9. **termination**: { conditions: string[], notice_period_days: number, penalties: string }\n10. **liability**: { cap: string, indemnification: string, insurance_required: boolean }\n11. **confidentiality**: { duration_years: number, scope: string, exceptions: string[] }\n12. **ip_ownership**: { owner: string, license_type: string, restrictions: string }\n13. **governing_law**: { jurisdiction: string, dispute_resolution: string }\n14. **risks**: Array of {\n      severity: HIGH|MEDIUM|LOW,\n      clause: string,\n      risk_description: string,\n      recommendation: string\n    }\n15. **missing_clauses**: Array of standard clauses that SHOULD be present but are missing\n16. **language**: ISO language code\n17. **overall_risk_score**: 1-10 (1=very safe, 10=very risky)\n18. **executive_summary**: 3-5 sentence plain-language summary of the contract\n\nRISK IDENTIFICATION RULES:\n- AUTO-RENEWAL without clear opt-out = HIGH risk\n- No liability cap = HIGH risk\n- Unlimited indemnification = HIGH risk\n- Non-compete clauses broader than 12 months / specific geography = MEDIUM risk\n- Missing governing law = MEDIUM risk\n- IP assignment without limitations = HIGH risk\n- Termination for convenience only for one party = MEDIUM risk\n- Data processing without GDPR/privacy clauses = HIGH risk (for EU contracts)\n- Payment terms > 60 days = MEDIUM risk\n\nRespond ONLY with valid JSON.",
+        "options": {}
+      },
+      "id": "ai-analyze-contract",
+      "name": "AI Agent: Analyze Contract",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [-650, 200]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "options": {
+          "temperature": 0.1,
+          "maxTokens": 3000
+        }
+      },
+      "id": "openai-model-contract",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [-650, 430],
+      "credentials": {
+        "openAiApi": { "id": "YOUR_OPENAI_CREDENTIAL_ID", "name": "OpenAI" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const aiRaw = $input.first().json;\nconst contract = $('Parse Contract Upload').item.json;\n\nlet analysis;\ntry {\n  const output = typeof aiRaw.output === 'string' ? aiRaw.output : JSON.stringify(aiRaw.output);\n  const cleaned = output.replace(/```json\\n?|```/g, '').trim();\n  analysis = JSON.parse(cleaned);\n} catch (e) {\n  analysis = {\n    contract_type: 'Other',\n    executive_summary: 'Analysis failed - manual review required',\n    overall_risk_score: 10,\n    risks: [{ severity: 'HIGH', clause: 'N/A', risk_description: 'AI analysis failed', recommendation: 'Manual review required' }],\n    missing_clauses: [],\n    parties: [],\n    key_terms: []\n  };\n}\n\nconst highRisks = (analysis.risks || []).filter(r => r.severity === 'HIGH');\nconst mediumRisks = (analysis.risks || []).filter(r => r.severity === 'MEDIUM');\n\nreturn [{\n  json: {\n    ...contract,\n    analysis,\n    risk_summary: {\n      score: analysis.overall_risk_score || 5,\n      high_count: highRisks.length,\n      medium_count: mediumRisks.length,\n      requires_legal_review: highRisks.length > 0 || (analysis.overall_risk_score || 5) >= 7,\n      auto_renewal_risk: analysis.auto_renewal?.enabled && !analysis.auto_renewal?.notice_period_days\n    },\n    processed_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "parse-analysis",
+      "name": "Parse & Score Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-350, 200]
+    },
+    {
+      "parameters": {
+        "url": "YOUR_SUPABASE_URL/rest/v1/contracts",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contract_id\": \"{{ $json.contract_id }}\",\n  \"file_name\": \"{{ $json.file_name }}\",\n  \"file_url\": \"{{ $json.file_url }}\",\n  \"contract_type\": \"{{ $json.analysis.contract_type }}\",\n  \"parties\": {{ JSON.stringify($json.analysis.parties) }},\n  \"effective_date\": {{ $json.analysis.effective_date ? '\"' + $json.analysis.effective_date + '\"' : 'null' }},\n  \"expiration_date\": {{ $json.analysis.expiration_date ? '\"' + $json.analysis.expiration_date + '\"' : 'null' }},\n  \"auto_renewal\": {{ JSON.stringify($json.analysis.auto_renewal || {}) }},\n  \"total_value\": {{ JSON.stringify($json.analysis.total_value || {}) }},\n  \"governing_law\": {{ JSON.stringify($json.analysis.governing_law || {}) }},\n  \"risk_score\": {{ $json.risk_summary.score }},\n  \"high_risks\": {{ $json.risk_summary.high_count }},\n  \"executive_summary\": {{ JSON.stringify($json.analysis.executive_summary) }},\n  \"full_analysis\": {{ JSON.stringify($json.analysis) }},\n  \"submitted_by\": \"{{ $json.submitted_by }}\",\n  \"department\": \"{{ $json.department }}\",\n  \"status\": \"{{ $json.risk_summary.requires_legal_review ? 'pending_review' : 'approved' }}\",\n  \"created_at\": \"{{ $json.upload_timestamp }}\"\n}",
+        "options": {
+          "headers": {
+            "parameters": [
+              { "name": "apikey", "value": "YOUR_SUPABASE_ANON_KEY" },
+              { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" },
+              { "name": "Content-Type", "value": "application/json" },
+              { "name": "Prefer", "value": "return=representation" }
+            ]
+          }
+        }
+      },
+      "id": "store-contract",
+      "name": "Supabase: Store Contract",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-100, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.risk_summary.requires_legal_review }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ]
+        }
+      },
+      "id": "check-legal-review",
+      "name": "Check: Needs Legal Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [150, 200]
+    },
+    {
+      "parameters": {
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"⚠️ Contract Requires Legal Review\",\n  \"blocks\": [\n    {\n      \"type\": \"header\",\n      \"text\": { \"type\": \"plain_text\", \"text\": \"⚠️ Contract Review Required\" }\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*{{ $json.analysis.contract_type }}* — Risk Score: *{{ $json.risk_summary.score }}/10*\\n\\n*Parties:* {{ $json.analysis.parties.map(p => p.name).join(' ↔ ') }}\\n*Submitted by:* {{ $json.submitted_by }}\\n*Department:* {{ $json.department }}\\n\\n*Executive Summary:*\\n{{ $json.analysis.executive_summary }}\"\n      }\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*🔴 High Risks ({{ $json.risk_summary.high_count }}):*\\n{{ $json.analysis.risks.filter(r => r.severity === 'HIGH').map(r => '• ' + r.risk_description).join('\\n') }}\\n\\n*🟡 Medium Risks ({{ $json.risk_summary.medium_count }}):*\\n{{ $json.analysis.risks.filter(r => r.severity === 'MEDIUM').map(r => '• ' + r.risk_description).join('\\n') }}\"\n      }\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Missing Clauses:*\\n{{ ($json.analysis.missing_clauses || []).map(c => '• ' + c).join('\\n') || 'None identified' }}\"\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "slack-legal-alert",
+      "name": "Slack: Legal Review Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 100]
+    },
+    {
+      "parameters": {
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"✅ Contract Auto-Approved\",\n  \"blocks\": [\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*✅ Contract Auto-Approved* — Risk Score: {{ $json.risk_summary.score }}/10\\n• Type: {{ $json.analysis.contract_type }}\\n• Parties: {{ $json.analysis.parties.map(p => p.name).join(' ↔ ') }}\\n• Value: {{ $json.analysis.total_value?.amount ? $json.analysis.total_value.currency + ' ' + $json.analysis.total_value.amount : 'N/A' }}\\n• Expires: {{ $json.analysis.expiration_date || 'No expiration' }}\"\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "slack-auto-approved",
+      "name": "Slack: Auto-Approved Notice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 350]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"analyzed\",\n  \"contract_id\": \"{{ $json.contract_id }}\",\n  \"contract_type\": \"{{ $json.analysis.contract_type }}\",\n  \"risk_score\": {{ $json.risk_summary.score }},\n  \"requires_legal_review\": {{ $json.risk_summary.requires_legal_review }},\n  \"executive_summary\": {{ JSON.stringify($json.analysis.executive_summary) }},\n  \"high_risks\": {{ $json.risk_summary.high_count }},\n  \"parties\": {{ JSON.stringify($json.analysis.parties) }}\n}"
+      },
+      "id": "respond-analysis",
+      "name": "Respond: Analysis Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [650, 200]
+    },
+    {
+      "parameters": {
+        "url": "YOUR_SUPABASE_URL/rest/v1/contracts?select=contract_id,file_name,expiration_date,auto_renewal,parties,department&status=eq.approved&expiration_date=lte.{{ new Date(Date.now() + 90 * 86400000).toISOString().split('T')[0] }}&expiration_date=gte.{{ new Date().toISOString().split('T')[0] }}",
+        "options": {
+          "headers": {
+            "parameters": [
+              { "name": "apikey", "value": "YOUR_SUPABASE_ANON_KEY" },
+              { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" }
+            ]
+          }
+        }
+      },
+      "id": "fetch-expiring",
+      "name": "Supabase: Fetch Expiring Contracts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-950, 550]
+    },
+    {
+      "parameters": {
+        "jsCode": "const contracts = $input.first().json || [];\nconst contractArray = Array.isArray(contracts) ? contracts : [contracts];\n\nif (contractArray.length === 0) {\n  return [{ json: { has_expiring: false, count: 0, message: 'No contracts expiring in next 90 days' } }];\n}\n\nconst summary = contractArray.map(c => {\n  const daysUntil = Math.ceil((new Date(c.expiration_date) - Date.now()) / 86400000);\n  const autoRenew = c.auto_renewal?.enabled ? '🔄 Auto-renews' : '⏰ Expires';\n  return `• *${c.file_name}* — ${autoRenew} in ${daysUntil} days (${c.expiration_date}) | Dept: ${c.department}`;\n}).join('\\n');\n\nreturn [{\n  json: {\n    has_expiring: true,\n    count: contractArray.length,\n    summary,\n    contracts: contractArray\n  }\n}];"
+      },
+      "id": "parse-expiring",
+      "name": "Parse Expiring Contracts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-650, 550]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.has_expiring }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ]
+        }
+      },
+      "id": "filter-has-expiring",
+      "name": "Filter: Has Expiring?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [-400, 550]
+    },
+    {
+      "parameters": {
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"📋 Weekly Contract Renewal Report\",\n  \"blocks\": [\n    {\n      \"type\": \"header\",\n      \"text\": { \"type\": \"plain_text\", \"text\": \"📋 Contracts Expiring in Next 90 Days\" }\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*{{ $json.count }} contract(s) require attention:*\\n\\n{{ $json.summary }}\"\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "slack-renewal-report",
+      "name": "Slack: Renewal Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-150, 550]
+    }
+  ],
+  "connections": {
+    "Contract Upload Webhook": { "main": [[{ "node": "Parse Contract Upload", "type": "main", "index": 0 }]] },
+    "Parse Contract Upload": { "main": [[{ "node": "AI Agent: Analyze Contract", "type": "main", "index": 0 }]] },
+    "AI Agent: Analyze Contract": { "main": [[{ "node": "Parse & Score Analysis", "type": "main", "index": 0 }]] },
+    "OpenAI Chat Model": { "ai_languageModel": [[{ "node": "AI Agent: Analyze Contract", "type": "ai_languageModel", "index": 0 }]] },
+    "Parse & Score Analysis": { "main": [[{ "node": "Supabase: Store Contract", "type": "main", "index": 0 }]] },
+    "Supabase: Store Contract": { "main": [[{ "node": "Check: Needs Legal Review?", "type": "main", "index": 0 }]] },
+    "Check: Needs Legal Review?": {
+      "main": [
+        [{ "node": "Slack: Legal Review Alert", "type": "main", "index": 0 }],
+        [{ "node": "Slack: Auto-Approved Notice", "type": "main", "index": 0 }]
+      ]
+    },
+    "Slack: Legal Review Alert": { "main": [[{ "node": "Respond: Analysis Result", "type": "main", "index": 0 }]] },
+    "Slack: Auto-Approved Notice": { "main": [[{ "node": "Respond: Analysis Result", "type": "main", "index": 0 }]] },
+    "Weekly Renewal Check (Mon 9AM)": { "main": [[{ "node": "Supabase: Fetch Expiring Contracts", "type": "main", "index": 0 }]] },
+    "Supabase: Fetch Expiring Contracts": { "main": [[{ "node": "Parse Expiring Contracts", "type": "main", "index": 0 }]] },
+    "Parse Expiring Contracts": { "main": [[{ "node": "Filter: Has Expiring?", "type": "main", "index": 0 }]] },
+    "Filter: Has Expiring?": { "main": [[{ "node": "Slack: Renewal Report", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": [{ "name": "contracts" }, { "name": "AI" }, { "name": "legal" }, { "name": "compliance" }]
+}

@@ -1,0 +1,202 @@
+{
+  "name": "Automated Dashboards - AI Reports v1",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "schedule-daily",
+      "name": "Daily 8AM (Weekdays)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-1000, 200]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "dashboard-refresh",
+        "options": {}
+      },
+      "id": "webhook-manual",
+      "name": "Manual Refresh Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1000, 400],
+      "webhookId": "YOUR_WEBHOOK_ID"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Define all data sources to pull\nconst today = new Date();\nconst startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate()).toISOString();\nconst startOfWeek = new Date(today.setDate(today.getDate() - today.getDay() + 1)).toISOString();\nconst startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString();\n\nreturn [{\n  json: {\n    period: {\n      today: startOfDay,\n      week: startOfWeek,\n      month: startOfMonth\n    },\n    sources: ['crm', 'support', 'billing', 'product'],\n    reportDate: new Date().toISOString().split('T')[0]\n  }\n}];"
+      },
+      "id": "prepare-params",
+      "name": "Prepare Date Parameters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-800, 300]
+    },
+    {
+      "parameters": {
+        "url": "YOUR_CRM_API/analytics/pipeline",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "start_date", "value": "={{ $json.period.month }}" },
+            { "name": "metrics", "value": "deals_won,deals_lost,pipeline_value,avg_deal_size,conversion_rate" }
+          ]
+        }
+      },
+      "id": "fetch-crm",
+      "name": "Fetch CRM Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-600, 100],
+      "credentials": { "httpHeaderAuth": { "id": "YOUR_CRM_CREDENTIAL_ID", "name": "CRM API" } }
+    },
+    {
+      "parameters": {
+        "url": "YOUR_SUPPORT_API/analytics/overview",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "start_date", "value": "={{ $('Prepare Date Parameters').first().json.period.month }}" },
+            { "name": "metrics", "value": "tickets_created,tickets_resolved,avg_resolution_time,csat,first_response_time" }
+          ]
+        }
+      },
+      "id": "fetch-support",
+      "name": "Fetch Support Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-600, 300],
+      "credentials": { "httpHeaderAuth": { "id": "YOUR_SUPPORT_CREDENTIAL_ID", "name": "Support API" } }
+    },
+    {
+      "parameters": {
+        "url": "YOUR_BILLING_API/analytics/revenue",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "start_date", "value": "={{ $('Prepare Date Parameters').first().json.period.month }}" },
+            { "name": "metrics", "value": "mrr,arr,churn_rate,new_subscriptions,expansions,contractions" }
+          ]
+        }
+      },
+      "id": "fetch-billing",
+      "name": "Fetch Billing Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-600, 500],
+      "credentials": { "httpHeaderAuth": { "id": "YOUR_BILLING_CREDENTIAL_ID", "name": "Billing API" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge all data sources into a single report object\nconst params = $('Prepare Date Parameters').first().json;\nconst crm = $('Fetch CRM Metrics').first().json;\nconst support = $('Fetch Support Metrics').first().json;\nconst billing = $('Fetch Billing Metrics').first().json;\n\nreturn [{\n  json: {\n    reportDate: params.reportDate,\n    period: params.period,\n    data: {\n      sales: crm.data || crm,\n      support: support.data || support,\n      revenue: billing.data || billing\n    }\n  }\n}];"
+      },
+      "id": "merge-data",
+      "name": "Merge All Data Sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-300, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a senior business analyst generating executive dashboard summaries.\n\nAnalyze the provided metrics and generate:\n1. executive_summary: 3-4 sentence overview of business health\n2. highlights: array of 3-5 positive trends or achievements\n3. alerts: array of metrics that need attention (declining, below target)\n4. recommendations: array of 2-3 actionable recommendations\n5. kpis: object with key metrics and their week-over-week change direction (up/down/stable)\n\nRespond in JSON only. Be specific with numbers. Flag anything that deviates >10% from normal patterns."
+            },
+            {
+              "role": "user",
+              "content": "=Report Date: {{ $json.reportDate }}\n\nData:\n{{ JSON.stringify($json.data, null, 2) }}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.2, "maxTokens": 1500 }
+      },
+      "id": "ai-analysis",
+      "name": "AI: Analyze & Generate Report",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.6,
+      "position": [-100, 300],
+      "credentials": { "openAiApi": { "id": "YOUR_OPENAI_CREDENTIAL_ID", "name": "OpenAI API" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI report and build Slack blocks\nconst raw = $input.first().json.message?.content || '{}';\nlet report;\ntry {\n  report = JSON.parse(raw.replace(/```json\\n?|```/g, '').trim());\n} catch (e) {\n  report = { executive_summary: raw, highlights: [], alerts: [], recommendations: [], kpis: {} };\n}\n\nconst data = $('Merge All Data Sources').first().json;\n\n// Build Slack Block Kit message\nconst blocks = [\n  { type: 'header', text: { type: 'plain_text', text: `📊 Daily Dashboard — ${data.reportDate}` } },\n  { type: 'section', text: { type: 'mrkdwn', text: `*Executive Summary*\\n${report.executive_summary}` } },\n  { type: 'divider' },\n  { type: 'section', text: { type: 'mrkdwn', text: `*✅ Highlights*\\n${(report.highlights || []).map(h => `• ${h}`).join('\\n')}` } },\n  { type: 'section', text: { type: 'mrkdwn', text: `*⚠️ Alerts*\\n${(report.alerts || []).map(a => `• ${a}`).join('\\n') || 'No alerts'}` } },\n  { type: 'section', text: { type: 'mrkdwn', text: `*💡 Recommendations*\\n${(report.recommendations || []).map(r => `• ${r}`).join('\\n')}` } }\n];\n\nreturn [{\n  json: {\n    report,\n    rawData: data,\n    slackBlocks: blocks\n  }\n}];"
+      },
+      "id": "format-report",
+      "name": "Format Report + Slack Blocks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://slack.com/api/chat.postMessage",
+        "method": "POST",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "slackApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"channel\": \"YOUR_DASHBOARD_CHANNEL_ID\",\n  \"blocks\": {{ JSON.stringify($json.slackBlocks) }}\n}"
+      },
+      "id": "post-slack",
+      "name": "Slack: Post Dashboard",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [300, 200],
+      "credentials": { "slackApi": { "id": "YOUR_SLACK_CREDENTIAL_ID", "name": "Slack API" } }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": "YOUR_GOOGLE_SHEET_ID",
+        "sheetName": "dashboard_history",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "date": "={{ $json.rawData.reportDate }}",
+            "summary": "={{ $json.report.executive_summary }}",
+            "highlights_count": "={{ ($json.report.highlights || []).length }}",
+            "alerts_count": "={{ ($json.report.alerts || []).length }}",
+            "raw_json": "={{ JSON.stringify($json.report) }}"
+          }
+        }
+      },
+      "id": "log-history",
+      "name": "Google Sheets: Archive Report",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [300, 400],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "YOUR_GSHEETS_CREDENTIAL_ID", "name": "Google Sheets" } }
+    }
+  ],
+  "connections": {
+    "Daily 8AM (Weekdays)": { "main": [[{ "node": "Prepare Date Parameters", "type": "main", "index": 0 }]] },
+    "Manual Refresh Webhook": { "main": [[{ "node": "Prepare Date Parameters", "type": "main", "index": 0 }]] },
+    "Prepare Date Parameters": { "main": [[{ "node": "Fetch CRM Metrics", "type": "main", "index": 0 }, { "node": "Fetch Support Metrics", "type": "main", "index": 0 }, { "node": "Fetch Billing Metrics", "type": "main", "index": 0 }]] },
+    "Fetch CRM Metrics": { "main": [[{ "node": "Merge All Data Sources", "type": "main", "index": 0 }]] },
+    "Fetch Support Metrics": { "main": [[{ "node": "Merge All Data Sources", "type": "main", "index": 0 }]] },
+    "Fetch Billing Metrics": { "main": [[{ "node": "Merge All Data Sources", "type": "main", "index": 0 }]] },
+    "Merge All Data Sources": { "main": [[{ "node": "AI: Analyze & Generate Report", "type": "main", "index": 0 }]] },
+    "AI: Analyze & Generate Report": { "main": [[{ "node": "Format Report + Slack Blocks", "type": "main", "index": 0 }]] },
+    "Format Report + Slack Blocks": { "main": [[{ "node": "Slack: Post Dashboard", "type": "main", "index": 0 }, { "node": "Google Sheets: Archive Report", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "meta": { "templateId": "automated-dashboards-v1" }
+}

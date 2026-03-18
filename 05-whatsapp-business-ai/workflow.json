@@ -1,0 +1,361 @@
+{
+  "name": "WhatsApp Business AI - Customer Service v2",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-webhook",
+        "options": {
+          "responseMode": "responseNode"
+        }
+      },
+      "id": "webhook-whatsapp",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-800, 200],
+      "webhookId": "YOUR_WEBHOOK_ID"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate and parse WhatsApp Cloud API payload\nconst body = $input.first().json.body;\n\nif (!body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]) {\n  return [{ json: { skip: true, reason: 'no_message' } }];\n}\n\nconst change = body.entry[0].changes[0].value;\nconst message = change.messages[0];\nconst contact = change.contacts?.[0] || {};\n\nreturn [{\n  json: {\n    skip: false,\n    messageId: message.id,\n    from: message.from,\n    timestamp: message.timestamp,\n    type: message.type,\n    text: message.text?.body || '',\n    contactName: contact.profile?.name || 'Unknown',\n    phoneNumberId: change.metadata?.phone_number_id || ''\n  }\n}];"
+      },
+      "id": "parse-message",
+      "name": "Parse WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-600, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "filter-valid",
+      "name": "Filter Valid Messages",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [-400, 200]
+    },
+    {
+      "parameters": {
+        "url": "=https://YOUR_CRM_API/contacts/search?phone={{ $json.from }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "crm-lookup",
+      "name": "CRM: Lookup Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-200, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_CRM_CREDENTIAL_ID",
+          "name": "CRM API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build context for AI agent\nconst message = $('Parse WhatsApp Message').first().json;\nconst crm = $input.first().json;\n\nconst customerContext = crm?.data ? {\n  name: crm.data.name || message.contactName,\n  email: crm.data.email || '',\n  plan: crm.data.plan || 'unknown',\n  language: crm.data.language || 'pt',\n  lastInteraction: crm.data.last_interaction || '',\n  openTickets: crm.data.open_tickets || 0,\n  lifetimeValue: crm.data.ltv || 0\n} : {\n  name: message.contactName,\n  email: '',\n  plan: 'unknown',\n  language: 'pt',\n  lastInteraction: '',\n  openTickets: 0,\n  lifetimeValue: 0\n};\n\nreturn [{\n  json: {\n    ...message,\n    customer: customerContext\n  }\n}];"
+      },
+      "id": "build-context",
+      "name": "Build AI Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [0, 200]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a multilingual customer service AI assistant for a SaaS company.\n\nRules:\n1. Always respond in the same language the customer used\n2. Be concise — WhatsApp messages should be short and scannable\n3. Use the customer context to personalize your response\n4. If the question requires human intervention (billing disputes, account deletion, technical escalation), respond with a helpful acknowledgment AND set escalate=true\n5. For common questions (pricing, features, how-to), answer directly from the knowledge base\n6. Never invent information — if unsure, escalate\n7. Use emojis sparingly and professionally\n8. Sign off with the company name, never a personal name\n\nRespond in JSON format:\n{\n  \"reply\": \"your response text\",\n  \"escalate\": true/false,\n  \"category\": \"billing|technical|feature_question|general|complaint|sales\",\n  \"sentiment\": \"positive|neutral|negative\",\n  \"language\": \"detected ISO language code\"\n}"
+            },
+            {
+              "role": "user",
+              "content": "=Customer: {{ $json.customer.name }} (Plan: {{ $json.customer.plan }}, LTV: {{ $json.customer.lifetimeValue }})\nOpen tickets: {{ $json.customer.openTickets }}\n\nMessage: {{ $json.text }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 500
+        }
+      },
+      "id": "ai-agent",
+      "name": "AI Agent: Generate Response",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.6,
+      "position": [200, 200],
+      "credentials": {
+        "openAiApi": {
+          "id": "YOUR_OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI response safely\nconst raw = $input.first().json.message?.content || $input.first().json.text || '{}';\nlet parsed;\n\ntry {\n  const cleaned = raw.replace(/```json\\n?|```/g, '').trim();\n  parsed = JSON.parse(cleaned);\n} catch (e) {\n  parsed = {\n    reply: raw,\n    escalate: true,\n    category: 'general',\n    sentiment: 'neutral',\n    language: 'pt'\n  };\n}\n\nconst original = $('Parse WhatsApp Message').first().json;\n\nreturn [{\n  json: {\n    ...original,\n    ai: parsed\n  }\n}];"
+      },
+      "id": "parse-ai-response",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 200]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.ai.escalate }}",
+                    "rightValue": true,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": "Escalate"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.ai.escalate }}",
+                    "rightValue": false,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": "Auto-Reply"
+            }
+          ]
+        }
+      },
+      "id": "switch-escalate",
+      "name": "Route: Escalate or Auto-Reply",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [600, 200]
+    },
+    {
+      "parameters": {
+        "url": "=https://graph.facebook.com/v18.0/{{ $json.phoneNumberId }}/messages",
+        "method": "POST",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "messaging_product",
+              "value": "whatsapp"
+            },
+            {
+              "name": "to",
+              "value": "={{ $json.from }}"
+            },
+            {
+              "name": "type",
+              "value": "text"
+            },
+            {
+              "name": "text",
+              "value": "={{ JSON.stringify({ body: $json.ai.reply }) }}"
+            }
+          ]
+        }
+      },
+      "id": "send-whatsapp-reply",
+      "name": "WhatsApp: Send Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [800, 100],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_WHATSAPP_CREDENTIAL_ID",
+          "name": "WhatsApp Cloud API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"🔔 *WhatsApp Escalation*\\nCustomer: {{ $json.customer?.name || $json.contactName }}\\nPhone: {{ $json.from }}\\nCategory: {{ $json.ai.category }}\\nSentiment: {{ $json.ai.sentiment }}\\nMessage: {{ $json.text }}\\nAI Draft: {{ $json.ai.reply }}\"\n}"
+      },
+      "id": "slack-escalation",
+      "name": "Slack: Notify Escalation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [800, 300]
+    },
+    {
+      "parameters": {
+        "url": "=https://graph.facebook.com/v18.0/{{ $json.phoneNumberId }}/messages",
+        "method": "POST",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "messaging_product",
+              "value": "whatsapp"
+            },
+            {
+              "name": "to",
+              "value": "={{ $json.from }}"
+            },
+            {
+              "name": "type",
+              "value": "text"
+            },
+            {
+              "name": "text",
+              "value": "={{ JSON.stringify({ body: $json.ai.reply + '\\n\\nUm membro da equipa entrará em contacto consigo em breve.' }) }}"
+            }
+          ]
+        }
+      },
+      "id": "send-escalation-reply",
+      "name": "WhatsApp: Send Escalation Ack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_WHATSAPP_CREDENTIAL_ID",
+          "name": "WhatsApp Cloud API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": "YOUR_GOOGLE_SHEET_ID",
+        "sheetName": "whatsapp_log",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ new Date().toISOString() }}",
+            "from": "={{ $json.from }}",
+            "customer_name": "={{ $json.customer?.name || $json.contactName }}",
+            "message": "={{ $json.text }}",
+            "ai_reply": "={{ $json.ai.reply }}",
+            "category": "={{ $json.ai.category }}",
+            "sentiment": "={{ $json.ai.sentiment }}",
+            "escalated": "={{ $json.ai.escalate }}",
+            "language": "={{ $json.ai.language }}"
+          }
+        }
+      },
+      "id": "log-sheets",
+      "name": "Google Sheets: Log Interaction",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1000, 100],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GSHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "WhatsApp Webhook": {
+      "main": [
+        [{ "node": "Parse WhatsApp Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse WhatsApp Message": {
+      "main": [
+        [{ "node": "Filter Valid Messages", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter Valid Messages": {
+      "main": [
+        [{ "node": "CRM: Lookup Contact", "type": "main", "index": 0 }]
+      ]
+    },
+    "CRM: Lookup Contact": {
+      "main": [
+        [{ "node": "Build AI Context", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build AI Context": {
+      "main": [
+        [{ "node": "AI Agent: Generate Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "AI Agent: Generate Response": {
+      "main": [
+        [{ "node": "Parse AI Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [{ "node": "Route: Escalate or Auto-Reply", "type": "main", "index": 0 }]
+      ]
+    },
+    "Route: Escalate or Auto-Reply": {
+      "main": [
+        [{ "node": "Slack: Notify Escalation", "type": "main", "index": 0 }],
+        [{ "node": "WhatsApp: Send Reply", "type": "main", "index": 0 }]
+      ]
+    },
+    "Slack: Notify Escalation": {
+      "main": [
+        [{ "node": "WhatsApp: Send Escalation Ack", "type": "main", "index": 0 }]
+      ]
+    },
+    "WhatsApp: Send Reply": {
+      "main": [
+        [{ "node": "Google Sheets: Log Interaction", "type": "main", "index": 0 }]
+      ]
+    },
+    "WhatsApp: Send Escalation Ack": {
+      "main": [
+        [{ "node": "Google Sheets: Log Interaction", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateId": "whatsapp-business-ai-v2"
+  }
+}

@@ -1,0 +1,273 @@
+{
+  "name": "Invoice & Billing AI - Fiscal Compliance v1",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "stripe-invoice-webhook",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "webhook-stripe",
+      "name": "Stripe Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1200, 200],
+      "webhookId": "YOUR_WEBHOOK_ID"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "schedule-overdue",
+      "name": "Daily Overdue Check (9AM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-1200, 450]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst event = body;\n\nconst eventType = event.type || 'unknown';\nconst invoice = event.data?.object || {};\n\nreturn [{\n  json: {\n    event_type: eventType,\n    invoice_id: invoice.id || '',\n    customer_id: invoice.customer || '',\n    customer_email: invoice.customer_email || '',\n    customer_name: invoice.customer_name || '',\n    amount_due: (invoice.amount_due || 0) / 100,\n    amount_paid: (invoice.amount_paid || 0) / 100,\n    currency: invoice.currency || 'eur',\n    status: invoice.status || '',\n    due_date: invoice.due_date ? new Date(invoice.due_date * 1000).toISOString() : '',\n    invoice_pdf: invoice.invoice_pdf || '',\n    subscription_id: invoice.subscription || '',\n    tax_amount: (invoice.tax || 0) / 100,\n    lines: (invoice.lines?.data || []).map(l => ({\n      description: l.description,\n      amount: l.amount / 100,\n      quantity: l.quantity,\n      tax_rates: l.tax_rates?.map(t => ({ id: t.id, percentage: t.percentage, country: t.country })) || []\n    })),\n    billing_reason: invoice.billing_reason || '',\n    attempt_count: invoice.attempt_count || 0,\n    next_payment_attempt: invoice.next_payment_attempt ? new Date(invoice.next_payment_attempt * 1000).toISOString() : '',\n    created_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "parse-stripe-event",
+      "name": "Parse Stripe Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-950, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.event_type }}",
+              "rightValue": "invoice.",
+              "operator": {
+                "type": "string",
+                "operation": "startsWith"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "filter-invoice-events",
+      "name": "Filter: Invoice Events Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [-750, 200]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.event_type }}",
+                    "rightValue": "invoice.payment_succeeded",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "outputIndex": 0
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.event_type }}",
+                    "rightValue": "invoice.payment_failed",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "outputIndex": 1
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.event_type }}",
+                    "rightValue": "invoice.overdue",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "outputIndex": 2
+            }
+          ]
+        }
+      },
+      "id": "switch-event-type",
+      "name": "Route by Event Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [-550, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "const inv = $input.first().json;\nconst lines = inv.lines || [];\n\n// Determine fiscal region from currency/customer\nconst fiscalRules = {\n  eur: { vat_label: 'IVA', standard_rate: 23, format: 'PT' },\n  brl: { vat_label: 'ISS/ICMS', standard_rate: 0, format: 'BR' },\n  usd: { vat_label: 'Sales Tax', standard_rate: 0, format: 'US' },\n  gbp: { vat_label: 'VAT', standard_rate: 20, format: 'UK' }\n};\n\nconst rules = fiscalRules[inv.currency] || fiscalRules['eur'];\n\nconst lineItems = lines.map((l, i) => ({\n  line_number: i + 1,\n  description: l.description,\n  quantity: l.quantity || 1,\n  unit_price: l.amount / (l.quantity || 1),\n  subtotal: l.amount,\n  tax_rate: l.tax_rates?.[0]?.percentage || rules.standard_rate,\n  tax_amount: l.amount * ((l.tax_rates?.[0]?.percentage || rules.standard_rate) / 100),\n  total: l.amount * (1 + (l.tax_rates?.[0]?.percentage || rules.standard_rate) / 100)\n}));\n\nconst subtotal = lineItems.reduce((s, l) => s + l.subtotal, 0);\nconst totalTax = lineItems.reduce((s, l) => s + l.tax_amount, 0);\nconst grandTotal = subtotal + totalTax;\n\nreturn [{\n  json: {\n    ...inv,\n    fiscal: {\n      region: rules.format,\n      vat_label: rules.vat_label,\n      line_items: lineItems,\n      subtotal: Math.round(subtotal * 100) / 100,\n      total_tax: Math.round(totalTax * 100) / 100,\n      grand_total: Math.round(grandTotal * 100) / 100,\n      invoice_number: `INV-${new Date().getFullYear()}-${inv.invoice_id.slice(-6).toUpperCase()}`,\n      issue_date: new Date().toISOString().split('T')[0],\n      compliance_check: {\n        has_tax_id: true,\n        has_line_items: lineItems.length > 0,\n        has_customer_address: true,\n        valid_tax_rates: lineItems.every(l => l.tax_rate >= 0),\n        status: 'COMPLIANT'\n      }\n    }\n  }\n}];"
+      },
+      "id": "fiscal-compliance",
+      "name": "Fiscal Compliance Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-300, 50]
+    },
+    {
+      "parameters": {
+        "text": "You are a billing and collections AI specialist.\n\nA payment has FAILED for a customer. Generate a professional, empathetic dunning email.\n\nINVOICE DATA:\n- Customer: {{ $json.customer_name }} ({{ $json.customer_email }})\n- Amount: {{ $json.currency }} {{ $json.amount_due }}\n- Invoice: {{ $json.invoice_id }}\n- Attempt #: {{ $json.attempt_count }}\n- Next retry: {{ $json.next_payment_attempt }}\n\nRULES:\n- Attempt 1: Soft, informational (\"payment didn't go through, likely a card issue\")\n- Attempt 2: Reminder with urgency (\"please update payment method to avoid service interruption\")\n- Attempt 3+: Firm but professional (\"service will be suspended if not resolved within 48h\")\n- Always include link to update payment: YOUR_BILLING_PORTAL_URL\n- Never threaten or use aggressive language\n- Detect customer language from name/email domain and respond accordingly\n\nRespond ONLY with JSON:\n{\n  \"subject\": \"email subject\",\n  \"body\": \"HTML email body\",\n  \"urgency\": \"low|medium|high\",\n  \"escalate_to_human\": true/false\n}",
+        "options": {}
+      },
+      "id": "ai-dunning-email",
+      "name": "AI Agent: Dunning Email",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [-300, 250]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 800
+        }
+      },
+      "id": "openai-model-dunning",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [-300, 450],
+      "credentials": {
+        "openAiApi": { "id": "YOUR_OPENAI_CREDENTIAL_ID", "name": "OpenAI" }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://api.stripe.com/v1/invoices?status=open&due_date[lt]={{ Math.floor(Date.now() / 1000) }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "fetch-overdue",
+      "name": "Stripe: Fetch Overdue Invoices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-950, 450],
+      "credentials": {
+        "httpHeaderAuth": { "id": "YOUR_STRIPE_CREDENTIAL_ID", "name": "Stripe API" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const invoices = $input.first().json.data || [];\n\nreturn invoices.map(inv => ({\n  json: {\n    invoice_id: inv.id,\n    customer_id: inv.customer,\n    customer_email: inv.customer_email,\n    customer_name: inv.customer_name,\n    amount_due: inv.amount_due / 100,\n    currency: inv.currency,\n    due_date: new Date(inv.due_date * 1000).toISOString(),\n    days_overdue: Math.floor((Date.now() / 1000 - inv.due_date) / 86400),\n    attempt_count: inv.attempt_count || 0,\n    status: 'overdue'\n  }\n})).filter(i => i.json.days_overdue > 0);"
+      },
+      "id": "parse-overdue",
+      "name": "Parse Overdue List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-700, 450]
+    },
+    {
+      "parameters": {
+        "url": "YOUR_EMAIL_API_URL",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "to", "value": "={{ $json.customer_email }}" },
+            { "name": "subject", "value": "={{ $json.email_subject }}" },
+            { "name": "html", "value": "={{ $json.email_body }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-dunning-email",
+      "name": "Send Dunning Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [100, 250]
+    },
+    {
+      "parameters": {
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"💰 Invoice Processed\",\n  \"blocks\": [\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Invoice {{ $json.fiscal.invoice_number }}*\\n• Customer: {{ $json.customer_name }}\\n• Amount: {{ $json.currency }} {{ $json.fiscal.grand_total }}\\n• Tax ({{ $json.fiscal.vat_label }}): {{ $json.fiscal.total_tax }}\\n• Compliance: ✅ {{ $json.fiscal.compliance_check.status }}\\n• Region: {{ $json.fiscal.region }}\"\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "slack-invoice-log",
+      "name": "Slack: Log Invoice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [100, 50]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "mode": "id", "value": "YOUR_GOOGLE_SHEET_ID" },
+        "sheetName": { "__rl": true, "mode": "byName", "value": "invoices" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.created_at }}",
+            "invoice_number": "={{ $json.fiscal.invoice_number }}",
+            "customer": "={{ $json.customer_name }}",
+            "email": "={{ $json.customer_email }}",
+            "subtotal": "={{ $json.fiscal.subtotal }}",
+            "tax": "={{ $json.fiscal.total_tax }}",
+            "total": "={{ $json.fiscal.grand_total }}",
+            "currency": "={{ $json.currency }}",
+            "region": "={{ $json.fiscal.region }}",
+            "status": "={{ $json.status }}",
+            "compliance": "={{ $json.fiscal.compliance_check.status }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "gsheets-log",
+      "name": "Google Sheets: Log Invoice",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [100, -100],
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "YOUR_GSHEETS_CREDENTIAL_ID", "name": "Google Sheets" }
+      }
+    }
+  ],
+  "connections": {
+    "Stripe Webhook": { "main": [[{ "node": "Parse Stripe Event", "type": "main", "index": 0 }]] },
+    "Parse Stripe Event": { "main": [[{ "node": "Filter: Invoice Events Only", "type": "main", "index": 0 }]] },
+    "Filter: Invoice Events Only": { "main": [[{ "node": "Route by Event Type", "type": "main", "index": 0 }]] },
+    "Route by Event Type": {
+      "main": [
+        [{ "node": "Fiscal Compliance Engine", "type": "main", "index": 0 }],
+        [{ "node": "AI Agent: Dunning Email", "type": "main", "index": 0 }],
+        [{ "node": "AI Agent: Dunning Email", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fiscal Compliance Engine": { "main": [[{ "node": "Slack: Log Invoice", "type": "main", "index": 0 }, { "node": "Google Sheets: Log Invoice", "type": "main", "index": 0 }]] },
+    "AI Agent: Dunning Email": { "main": [[{ "node": "Send Dunning Email", "type": "main", "index": 0 }]] },
+    "OpenAI Chat Model": { "ai_languageModel": [[{ "node": "AI Agent: Dunning Email", "type": "ai_languageModel", "index": 0 }]] },
+    "Daily Overdue Check (9AM)": { "main": [[{ "node": "Stripe: Fetch Overdue Invoices", "type": "main", "index": 0 }]] },
+    "Stripe: Fetch Overdue Invoices": { "main": [[{ "node": "Parse Overdue List", "type": "main", "index": 0 }]] },
+    "Parse Overdue List": { "main": [[{ "node": "AI Agent: Dunning Email", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": [{ "name": "billing" }, { "name": "AI" }, { "name": "fiscal-compliance" }]
+}

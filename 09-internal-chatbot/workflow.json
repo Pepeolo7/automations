@@ -1,0 +1,205 @@
+{
+  "name": "Internal Chatbot - Onboarding & Company Policies v1",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "internal-chatbot",
+        "options": {},
+        "responseMode": "responseNode"
+      },
+      "id": "webhook-chat",
+      "name": "Chat Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1200, 200],
+      "webhookId": "YOUR_WEBHOOK_ID"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nconst message = {\n  user_id: input.user_id || 'anonymous',\n  user_name: input.user_name || 'Employee',\n  user_email: input.user_email || '',\n  department: input.department || 'unknown',\n  role: input.role || '',\n  question: input.message || input.question || '',\n  conversation_id: input.conversation_id || `CONV-${Date.now()}`,\n  message_history: input.history || [],\n  is_onboarding: input.is_onboarding || false,\n  days_since_hire: input.days_since_hire || null,\n  timestamp: new Date().toISOString()\n};\n\nreturn [{ json: message }];"
+      },
+      "id": "parse-message",
+      "name": "Parse Chat Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-950, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.question }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEquals" }
+            }
+          ]
+        }
+      },
+      "id": "filter-empty",
+      "name": "Filter: Has Question",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [-750, 200]
+    },
+    {
+      "parameters": {
+        "url": "YOUR_SUPABASE_URL/rest/v1/knowledge_base?select=*&category=in.(policy,onboarding,hr,it,benefits)&order=updated_at.desc&limit=50",
+        "options": {
+          "headers": {
+            "parameters": [
+              { "name": "apikey", "value": "YOUR_SUPABASE_ANON_KEY" },
+              { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" }
+            ]
+          }
+        }
+      },
+      "id": "fetch-knowledge",
+      "name": "Fetch Knowledge Base",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-550, 50]
+    },
+    {
+      "parameters": {
+        "jsCode": "const articles = $input.first().json || [];\nconst articleArray = Array.isArray(articles) ? articles : [articles];\n\nconst context = articleArray.map(a => \n  `[${a.category}] ${a.title}:\\n${a.content}`\n).join('\\n\\n---\\n\\n');\n\nconst userMsg = $('Parse Chat Message').item.json;\n\nreturn [{\n  json: {\n    ...userMsg,\n    knowledge_context: context.substring(0, 8000)\n  }\n}];"
+      },
+      "id": "build-context",
+      "name": "Build Knowledge Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-350, 200]
+    },
+    {
+      "parameters": {
+        "text": "You are an internal company assistant chatbot. Your role is to help employees with onboarding questions, company policies, HR processes, IT support, and benefits information.\n\nKNOWLEDGE BASE:\n{{ $json.knowledge_context }}\n\nEMPLOYEE CONTEXT:\n- Name: {{ $json.user_name }}\n- Department: {{ $json.department }}\n- Role: {{ $json.role }}\n- Onboarding mode: {{ $json.is_onboarding }}\n- Days since hire: {{ $json.days_since_hire }}\n\nCONVERSATION HISTORY:\n{{ $json.message_history.map(m => `${m.role}: ${m.content}`).join('\\n') }}\n\nCURRENT QUESTION:\n{{ $json.question }}\n\nRULES:\n1. ONLY answer based on the knowledge base provided. Never make up policies or procedures.\n2. If the answer isn't in the knowledge base, say: \"I don't have information about that in my knowledge base. Let me connect you with the right team.\" and set escalate=true.\n3. For onboarding employees (is_onboarding=true), be extra welcoming and proactive — suggest next steps they should complete.\n4. For sensitive HR topics (salary, termination, complaints), always escalate to HR.\n5. Respond in the same language as the question.\n6. Keep responses concise (under 200 words) but complete.\n7. Reference specific policy names/documents when citing information.\n8. For IT questions (password reset, VPN, software access), provide step-by-step instructions if available.\n\nCATEGORIZE THE QUESTION:\n- ONBOARDING: First-day setup, equipment, introductions, training schedule\n- POLICY: PTO, remote work, expenses, dress code, code of conduct\n- HR: Benefits, payroll, performance reviews, leave requests\n- IT: Password, VPN, software, hardware, access permissions\n- BENEFITS: Health insurance, retirement, wellness, education allowance\n- GENERAL: Office locations, org chart, team contacts\n\nRespond with JSON:\n{\n  \"answer\": \"your response in markdown\",\n  \"category\": \"ONBOARDING|POLICY|HR|IT|BENEFITS|GENERAL\",\n  \"confidence\": 0.0-1.0,\n  \"escalate\": true/false,\n  \"escalate_to\": \"hr|it|manager|null\",\n  \"sources\": [\"policy names referenced\"],\n  \"suggested_followups\": [\"optional follow-up questions\"]\n}",
+        "options": {}
+      },
+      "id": "ai-chatbot",
+      "name": "AI Agent: Internal Chatbot",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [-100, 200]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "options": {
+          "temperature": 0.2,
+          "maxTokens": 1000
+        }
+      },
+      "id": "openai-model-chatbot",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [-100, 420],
+      "credentials": {
+        "openAiApi": { "id": "YOUR_OPENAI_CREDENTIAL_ID", "name": "OpenAI" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const aiRaw = $input.first().json;\nconst userMsg = $('Parse Chat Message').item.json;\n\nlet parsed;\ntry {\n  const output = typeof aiRaw.output === 'string' ? aiRaw.output : JSON.stringify(aiRaw.output);\n  const cleaned = output.replace(/```json\\n?|```/g, '').trim();\n  parsed = JSON.parse(cleaned);\n} catch (e) {\n  parsed = {\n    answer: typeof aiRaw.output === 'string' ? aiRaw.output : 'Sorry, I had trouble processing that. Please try rephrasing your question.',\n    category: 'GENERAL',\n    confidence: 0.5,\n    escalate: false,\n    escalate_to: null,\n    sources: [],\n    suggested_followups: []\n  };\n}\n\nreturn [{\n  json: {\n    conversation_id: userMsg.conversation_id,\n    user_id: userMsg.user_id,\n    question: userMsg.question,\n    ...parsed,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "parse-ai-response",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [150, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.escalate }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ]
+        }
+      },
+      "id": "check-escalation",
+      "name": "Check: Needs Escalation?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [350, 200]
+    },
+    {
+      "parameters": {
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"🆘 Chatbot Escalation\",\n  \"blocks\": [\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*🆘 Employee Needs Help*\\n• Employee: {{ $json.user_id }}\\n• Category: {{ $json.category }}\\n• Escalate to: {{ $json.escalate_to }}\\n• Question: {{ $json.question }}\\n• Bot answer: {{ $json.answer.substring(0, 200) }}...\"\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "slack-escalation",
+      "name": "Slack: Escalation Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, 100]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "mode": "id", "value": "YOUR_GOOGLE_SHEET_ID" },
+        "sheetName": { "__rl": true, "mode": "byName", "value": "chatbot_logs" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.timestamp }}",
+            "conversation_id": "={{ $json.conversation_id }}",
+            "user_id": "={{ $json.user_id }}",
+            "category": "={{ $json.category }}",
+            "question": "={{ $json.question }}",
+            "confidence": "={{ $json.confidence }}",
+            "escalated": "={{ $json.escalate }}",
+            "escalate_to": "={{ $json.escalate_to }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "gsheets-log",
+      "name": "Google Sheets: Log Interaction",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [600, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "YOUR_GSHEETS_CREDENTIAL_ID", "name": "Google Sheets" }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"conversation_id\": \"{{ $json.conversation_id }}\",\n  \"answer\": {{ JSON.stringify($json.answer) }},\n  \"category\": \"{{ $json.category }}\",\n  \"confidence\": {{ $json.confidence }},\n  \"escalated\": {{ $json.escalate }},\n  \"sources\": {{ JSON.stringify($json.sources) }},\n  \"suggested_followups\": {{ JSON.stringify($json.suggested_followups) }}\n}"
+      },
+      "id": "respond-chat",
+      "name": "Respond: Chat Answer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [850, 200]
+    }
+  ],
+  "connections": {
+    "Chat Webhook": { "main": [[{ "node": "Parse Chat Message", "type": "main", "index": 0 }]] },
+    "Parse Chat Message": { "main": [[{ "node": "Filter: Has Question", "type": "main", "index": 0 }]] },
+    "Filter: Has Question": { "main": [[{ "node": "Fetch Knowledge Base", "type": "main", "index": 0 }]] },
+    "Fetch Knowledge Base": { "main": [[{ "node": "Build Knowledge Context", "type": "main", "index": 0 }]] },
+    "Build Knowledge Context": { "main": [[{ "node": "AI Agent: Internal Chatbot", "type": "main", "index": 0 }]] },
+    "AI Agent: Internal Chatbot": { "main": [[{ "node": "Parse AI Response", "type": "main", "index": 0 }]] },
+    "OpenAI Chat Model": { "ai_languageModel": [[{ "node": "AI Agent: Internal Chatbot", "type": "ai_languageModel", "index": 0 }]] },
+    "Parse AI Response": { "main": [[{ "node": "Check: Needs Escalation?", "type": "main", "index": 0 }, { "node": "Google Sheets: Log Interaction", "type": "main", "index": 0 }]] },
+    "Check: Needs Escalation?": {
+      "main": [
+        [{ "node": "Slack: Escalation Alert", "type": "main", "index": 0 }],
+        [{ "node": "Respond: Chat Answer", "type": "main", "index": 0 }]
+      ]
+    },
+    "Slack: Escalation Alert": { "main": [[{ "node": "Respond: Chat Answer", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": [{ "name": "chatbot" }, { "name": "AI" }, { "name": "onboarding" }, { "name": "HR" }]
+}

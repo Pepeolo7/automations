@@ -1,0 +1,205 @@
+{
+  "name": "Document Management AI - Classification & Search v1",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "document-upload",
+        "options": {
+          "rawBody": false
+        },
+        "responseMode": "responseNode"
+      },
+      "id": "webhook-upload",
+      "name": "Document Upload Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1200, 200],
+      "webhookId": "YOUR_WEBHOOK_ID"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "document-search",
+        "options": {},
+        "responseMode": "responseNode"
+      },
+      "id": "webhook-search",
+      "name": "Document Search Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1200, 600],
+      "webhookId": "YOUR_SEARCH_WEBHOOK_ID"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nconst doc = {\n  file_name: input.file_name || 'unnamed',\n  file_url: input.file_url || '',\n  file_type: input.file_type || 'unknown',\n  file_size: input.file_size || 0,\n  source: input.source || 'manual_upload',\n  uploaded_by: input.uploaded_by || 'system',\n  department: input.department || '',\n  raw_text: input.text_content || '',\n  upload_timestamp: new Date().toISOString(),\n  doc_id: `DOC-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`\n};\n\nreturn [{ json: doc }];"
+      },
+      "id": "parse-upload",
+      "name": "Parse Document Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-950, 200]
+    },
+    {
+      "parameters": {
+        "text": "You are a document classification and metadata extraction AI.\n\nAnalyze the following document and extract structured metadata.\n\nDOCUMENT DATA:\n- Filename: {{ $json.file_name }}\n- Type: {{ $json.file_type }}\n- Source: {{ $json.source }}\n- Department: {{ $json.department }}\n- Content (first 3000 chars): {{ $json.raw_text.substring(0, 3000) }}\n\nCLASSIFY INTO ONE CATEGORY:\n- CONTRACT: Agreements, terms, NDAs, SLAs, MSAs\n- INVOICE: Bills, receipts, payment documents, purchase orders\n- REPORT: Analysis, metrics, reviews, audits\n- POLICY: Internal policies, procedures, compliance docs, SOPs\n- HR: Employee records, offer letters, performance reviews, timesheets\n- LEGAL: Legal opinions, court documents, regulatory filings\n- MARKETING: Campaigns, brand assets, presentations, proposals\n- TECHNICAL: Architecture docs, API specs, runbooks, RFCs\n- CORRESPONDENCE: Emails, letters, memos, meeting minutes\n- OTHER: Anything that doesn't fit above\n\nEXTRACT:\n1. category (from above)\n2. subcategory (specific type within category)\n3. title (clean document title)\n4. summary (2-3 sentence summary)\n5. entities (people, companies, dates mentioned)\n6. keywords (5-10 relevant search keywords)\n7. language (ISO code)\n8. sensitivity (public, internal, confidential, restricted)\n9. retention_years (recommended retention period)\n10. action_required (true/false + description if true)\n\nRespond ONLY with valid JSON.",
+        "options": {}
+      },
+      "id": "ai-classify",
+      "name": "AI Agent: Classify Document",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [-700, 200]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "options": {
+          "temperature": 0.1,
+          "maxTokens": 1000
+        }
+      },
+      "id": "openai-model-classify",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [-700, 400],
+      "credentials": {
+        "openAiApi": { "id": "YOUR_OPENAI_CREDENTIAL_ID", "name": "OpenAI" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const doc = $('Parse Document Metadata').item.json;\nconst aiRaw = $input.first().json;\n\nlet classification;\ntry {\n  const output = typeof aiRaw.output === 'string' ? aiRaw.output : JSON.stringify(aiRaw.output);\n  const cleaned = output.replace(/```json\\n?|```/g, '').trim();\n  classification = JSON.parse(cleaned);\n} catch (e) {\n  classification = {\n    category: 'OTHER',\n    subcategory: 'unclassified',\n    title: doc.file_name,\n    summary: 'Classification failed - manual review required',\n    entities: [],\n    keywords: [],\n    language: 'en',\n    sensitivity: 'internal',\n    retention_years: 7,\n    action_required: false\n  };\n}\n\nconst enrichedDoc = {\n  ...doc,\n  classification,\n  storage_path: `/${classification.category.toLowerCase()}/${new Date().getFullYear()}/${doc.doc_id}`,\n  search_index: [\n    classification.title,\n    classification.summary,\n    ...(classification.keywords || []),\n    ...(classification.entities || []),\n    classification.category,\n    classification.subcategory\n  ].join(' ').toLowerCase(),\n  processed_at: new Date().toISOString()\n};\n\nreturn [{ json: enrichedDoc }];"
+      },
+      "id": "enrich-metadata",
+      "name": "Enrich & Build Search Index",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-400, 200]
+    },
+    {
+      "parameters": {
+        "url": "YOUR_SUPABASE_URL/rest/v1/documents",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"doc_id\": \"{{ $json.doc_id }}\",\n  \"file_name\": \"{{ $json.file_name }}\",\n  \"file_url\": \"{{ $json.file_url }}\",\n  \"file_type\": \"{{ $json.file_type }}\",\n  \"category\": \"{{ $json.classification.category }}\",\n  \"subcategory\": \"{{ $json.classification.subcategory }}\",\n  \"title\": \"{{ $json.classification.title }}\",\n  \"summary\": \"{{ $json.classification.summary }}\",\n  \"keywords\": {{ JSON.stringify($json.classification.keywords) }},\n  \"entities\": {{ JSON.stringify($json.classification.entities) }},\n  \"sensitivity\": \"{{ $json.classification.sensitivity }}\",\n  \"language\": \"{{ $json.classification.language }}\",\n  \"retention_years\": {{ $json.classification.retention_years }},\n  \"storage_path\": \"{{ $json.storage_path }}\",\n  \"search_index\": \"{{ $json.search_index }}\",\n  \"uploaded_by\": \"{{ $json.uploaded_by }}\",\n  \"department\": \"{{ $json.department }}\",\n  \"created_at\": \"{{ $json.upload_timestamp }}\"\n}",
+        "options": {
+          "headers": {
+            "parameters": [
+              { "name": "apikey", "value": "YOUR_SUPABASE_ANON_KEY" },
+              { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" },
+              { "name": "Content-Type", "value": "application/json" },
+              { "name": "Prefer", "value": "return=representation" }
+            ]
+          }
+        }
+      },
+      "id": "store-supabase",
+      "name": "Supabase: Store Document Record",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-100, 200]
+    },
+    {
+      "parameters": {
+        "url": "YOUR_OPENAI_EMBEDDINGS_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"text-embedding-3-small\",\n  \"input\": \"{{ $json.classification.title }}. {{ $json.classification.summary }}. {{ $json.classification.keywords.join(', ') }}\"\n}",
+        "options": {}
+      },
+      "id": "generate-embedding",
+      "name": "OpenAI: Generate Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-100, 0],
+      "credentials": {
+        "httpHeaderAuth": { "id": "YOUR_OPENAI_CREDENTIAL_ID", "name": "OpenAI API" }
+      }
+    },
+    {
+      "parameters": {
+        "url": "YOUR_SUPABASE_URL/rest/v1/rpc/match_documents",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"query_embedding\": {{ $json.embedding }},\n  \"match_threshold\": 0.7,\n  \"match_count\": 10\n}",
+        "options": {
+          "headers": {
+            "parameters": [
+              { "name": "apikey", "value": "YOUR_SUPABASE_ANON_KEY" },
+              { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" }
+            ]
+          }
+        }
+      },
+      "id": "vector-search",
+      "name": "Supabase: Vector Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-700, 600]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.classification.sensitivity }}",
+              "rightValue": "restricted",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ]
+        }
+      },
+      "id": "check-sensitivity",
+      "name": "Check: Restricted Document?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [150, 200]
+    },
+    {
+      "parameters": {
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"🔒 Restricted Document Uploaded\",\n  \"blocks\": [\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*🔒 Restricted Document Alert*\\n• Title: {{ $json.classification.title }}\\n• Category: {{ $json.classification.category }}\\n• Uploaded by: {{ $json.uploaded_by }}\\n• Department: {{ $json.department }}\\n• Requires immediate access control review\"\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "slack-restricted-alert",
+      "name": "Slack: Restricted Doc Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"success\",\n  \"doc_id\": \"{{ $json.doc_id }}\",\n  \"category\": \"{{ $json.classification.category }}\",\n  \"title\": \"{{ $json.classification.title }}\",\n  \"storage_path\": \"{{ $json.storage_path }}\"\n}"
+      },
+      "id": "respond-success",
+      "name": "Respond: Upload Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [400, 300]
+    }
+  ],
+  "connections": {
+    "Document Upload Webhook": { "main": [[{ "node": "Parse Document Metadata", "type": "main", "index": 0 }]] },
+    "Parse Document Metadata": { "main": [[{ "node": "AI Agent: Classify Document", "type": "main", "index": 0 }]] },
+    "AI Agent: Classify Document": { "main": [[{ "node": "Enrich & Build Search Index", "type": "main", "index": 0 }]] },
+    "OpenAI Chat Model": { "ai_languageModel": [[{ "node": "AI Agent: Classify Document", "type": "ai_languageModel", "index": 0 }]] },
+    "Enrich & Build Search Index": { "main": [[{ "node": "Supabase: Store Document Record", "type": "main", "index": 0 }, { "node": "OpenAI: Generate Embedding", "type": "main", "index": 0 }]] },
+    "Supabase: Store Document Record": { "main": [[{ "node": "Check: Restricted Document?", "type": "main", "index": 0 }]] },
+    "Check: Restricted Document?": {
+      "main": [
+        [{ "node": "Slack: Restricted Doc Alert", "type": "main", "index": 0 }],
+        [{ "node": "Respond: Upload Success", "type": "main", "index": 0 }]
+      ]
+    },
+    "Document Search Webhook": { "main": [[{ "node": "Supabase: Vector Search", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": [{ "name": "document-management" }, { "name": "AI" }, { "name": "classification" }]
+}

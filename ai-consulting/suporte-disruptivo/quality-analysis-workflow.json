@@ -1,0 +1,120 @@
+{
+  "name": "AI Post-Interaction Quality Analysis",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 24 }] }
+      },
+      "name": "Daily Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.intercom.io/conversations?open=false&updated_after={{ $now.minus({hours: 24}).toISO() }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": { "response": { "response": { "fullResponse": false } } }
+      },
+      "name": "Get Yesterday Conversations",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "conversations"
+      },
+      "name": "Split Conversations",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "És um auditor de qualidade de suporte para [EMPRESA]. Analisa a transcrição e responde APENAS em JSON: {\"scores\": {\"resolucao\": 0-10, \"empatia\": 0-10, \"eficiencia\": 0-10, \"compliance\": 0-10, \"comunicacao\": 0-10, \"proatividade\": 0-10}, \"score_global\": 0-10, \"resolvido\": bool, \"problemas\": [\"lista\"], \"positivos\": [\"lista\"], \"risco_churn\": \"baixo|medio|alto\", \"formacao_sugerida\": \"area ou null\", \"resumo\": \"2 frases\"}"
+            },
+            {
+              "role": "user",
+              "content": "=Conversa ID: {{ $json.id }}\nAgente: {{ $json.admin_assignee_id }}\nTranscrição:\n{{ $json.conversation_parts }}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.2, "maxTokens": 800 }
+      },
+      "name": "AI Quality Analysis",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.8,
+      "position": [910, 300],
+      "credentials": { "openAiApi": { "id": "[OPENAI_CRED_ID]", "name": "OpenAI" } }
+    },
+    {
+      "parameters": {
+        "documentId": { "value": "[GOOGLE_SHEET_ID]" },
+        "sheetName": "Quality Scores",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "date": "={{ $now.toISO() }}",
+            "conversation_id": "={{ $json.interacao_id }}",
+            "agent": "={{ $json.agente }}",
+            "score_global": "={{ $json.score_global }}",
+            "resolucao": "={{ $json.scores.resolucao }}",
+            "empatia": "={{ $json.scores.empatia }}",
+            "eficiencia": "={{ $json.scores.eficiencia }}",
+            "compliance": "={{ $json.scores.compliance }}",
+            "comunicacao": "={{ $json.scores.comunicacao }}",
+            "proatividade": "={{ $json.scores.proatividade }}",
+            "resolvido": "={{ $json.resolvido }}",
+            "risco_churn": "={{ $json.risco_churn }}",
+            "resumo": "={{ $json.resumo }}"
+          }
+        }
+      },
+      "name": "Log Scores",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            { "leftValue": "={{ $json.score_global }}", "rightValue": 5, "operator": { "type": "number", "operation": "smallerEqual" } }
+          ]
+        }
+      },
+      "name": "Alert if Low Score",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "channel": "[SLACK_CHANNEL_QA]",
+        "text": "=⚠️ Interação com score baixo ({{ $json.score_global }}/10)\nAgente: {{ $json.agente }}\nProblemas: {{ $json.problemas.join(', ') }}\nFormação sugerida: {{ $json.formacao_sugerida }}\nResumo: {{ $json.resumo }}"
+      },
+      "name": "Slack Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [1570, 300]
+    }
+  ],
+  "connections": {
+    "Daily Schedule": { "main": [[{ "node": "Get Yesterday Conversations", "type": "main", "index": 0 }]] },
+    "Get Yesterday Conversations": { "main": [[{ "node": "Split Conversations", "type": "main", "index": 0 }]] },
+    "Split Conversations": { "main": [[{ "node": "AI Quality Analysis", "type": "main", "index": 0 }]] },
+    "AI Quality Analysis": { "main": [[{ "node": "Log Scores", "type": "main", "index": 0 }]] },
+    "Log Scores": { "main": [[{ "node": "Alert if Low Score", "type": "main", "index": 0 }]] },
+    "Alert if Low Score": { "main": [[{ "node": "Slack Alert", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "ai-consulting" }, { "name": "quality-analysis" }]
+}

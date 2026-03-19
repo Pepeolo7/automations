@@ -1,0 +1,169 @@
+{
+  "name": "AI Proactive Customer Outreach",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 6 }]
+        }
+      },
+      "name": "Schedule - Every 6h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=[BILLING_API_URL]/invoices?status=overdue&days=3",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "name": "Fetch At-Risk Customers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=[CRM_API_URL]/customers/{{ $json.customer_id }}/history",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "name": "Get Customer History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "És um analista de risco de experiência do cliente para [EMPRESA]. Analisa os dados fornecidos e identifica se o cliente precisa de contacto proativo. Responde APENAS em JSON com: {\"risco\": \"CRITICO|ALTO|MEDIO|BAIXO|NENHUM\", \"problema_previsto\": \"desc\", \"mensagem_cliente\": \"texto empático pronto a enviar\", \"canal\": \"whatsapp|email\", \"prazo\": \"imediato|24h|48h\"}"
+            },
+            {
+              "role": "user",
+              "content": "=Cliente: {{ $json.customer_name }}\nEmail: {{ $json.email }}\nStatus fatura: {{ $json.invoice_status }}\nValor: {{ $json.amount }}\nDias em atraso: {{ $json.days_overdue }}\nHistórico reclamações: {{ $json.complaint_count }}\nÚltimo contacto: {{ $json.last_contact }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 500
+        }
+      },
+      "name": "AI Risk Analysis",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.8,
+      "position": [910, 300],
+      "credentials": {
+        "openAiApi": { "id": "[OPENAI_CRED_ID]", "name": "OpenAI" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false },
+          "combinator": "or",
+          "conditions": [
+            { "leftValue": "={{ $json.risco }}", "rightValue": "CRITICO", "operator": { "type": "string", "operation": "equals" } },
+            { "leftValue": "={{ $json.risco }}", "rightValue": "ALTO", "operator": { "type": "string", "operation": "equals" } },
+            { "leftValue": "={{ $json.risco }}", "rightValue": "MEDIO", "operator": { "type": "string", "operation": "equals" } }
+          ]
+        }
+      },
+      "name": "Filter: Needs Action?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.canal }}", "rightValue": "whatsapp", "operator": { "type": "string", "operation": "equals" } }] }, "output": 0 },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.canal }}", "rightValue": "email", "operator": { "type": "string", "operation": "equals" } }] }, "output": 1 }
+          ]
+        }
+      },
+      "name": "Route by Channel",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=[WHATSAPP_API_URL]/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "to", "value": "={{ $json.phone }}" },
+            { "name": "text", "value": "={{ $json.mensagem_cliente }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Send WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1570, 200]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "toEmail": "={{ $json.email }}",
+        "subject": "=[EMPRESA] — Informação importante sobre a sua conta",
+        "emailType": "text",
+        "message": "={{ $json.mensagem_cliente }}"
+      },
+      "name": "Send Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1570, 400]
+    },
+    {
+      "parameters": {
+        "documentId": { "value": "[GOOGLE_SHEET_ID]" },
+        "sheetName": "Proactive Outreach Log",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "date": "={{ $now.toISO() }}",
+            "customer": "={{ $json.customer_name }}",
+            "risk_level": "={{ $json.risco }}",
+            "problem": "={{ $json.problema_previsto }}",
+            "channel": "={{ $json.canal }}",
+            "message_sent": "={{ $json.mensagem_cliente }}",
+            "status": "sent"
+          }
+        }
+      },
+      "name": "Log to Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1790, 300]
+    }
+  ],
+  "connections": {
+    "Schedule - Every 6h": { "main": [[{ "node": "Fetch At-Risk Customers", "type": "main", "index": 0 }]] },
+    "Fetch At-Risk Customers": { "main": [[{ "node": "Get Customer History", "type": "main", "index": 0 }]] },
+    "Get Customer History": { "main": [[{ "node": "AI Risk Analysis", "type": "main", "index": 0 }]] },
+    "AI Risk Analysis": { "main": [[{ "node": "Filter: Needs Action?", "type": "main", "index": 0 }]] },
+    "Filter: Needs Action?": { "main": [[{ "node": "Route by Channel", "type": "main", "index": 0 }]] },
+    "Route by Channel": { "main": [[{ "node": "Send WhatsApp", "type": "main", "index": 0 }], [{ "node": "Send Email", "type": "main", "index": 0 }]] },
+    "Send WhatsApp": { "main": [[{ "node": "Log to Sheets", "type": "main", "index": 0 }]] },
+    "Send Email": { "main": [[{ "node": "Log to Sheets", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "ai-consulting" }, { "name": "suporte-proativo" }]
+}

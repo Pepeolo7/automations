@@ -1,0 +1,123 @@
+{
+  "name": "AI Churn Prediction & Alert",
+  "nodes": [
+    {
+      "parameters": { "rule": { "interval": [{ "field": "days", "daysInterval": 7 }] } },
+      "name": "Weekly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=[CRM_API_URL]/customers?status=active",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "name": "Get Active Customers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": { "fieldToSplitOut": "customers" },
+      "name": "Split Customers",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=[CRM_API_URL]/customers/{{ $json.id }}/engagement?period=90d",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "name": "Get Engagement Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "És analista de retenção para [EMPRESA]. Analisa dados de engagement e classifica risco de churn. Responde APENAS em JSON: {\"risco_churn\": \"baixo|medio|alto|critico\", \"probabilidade_saida_90d\": \"X%\", \"sinais\": [\"lista\"], \"causa_provavel\": \"desc\", \"acao\": \"intervenção sugerida\", \"urgencia\": \"esta_semana|2_semanas|este_mes\", \"script_contacto\": \"texto para account manager\"}"
+            },
+            {
+              "role": "user",
+              "content": "=Cliente: {{ $json.name }} ({{ $json.company }})\nPlano: {{ $json.plan }}\nMRR: {{ $json.mrr }}\nLogins último mês: {{ $json.logins_30d }} (média: {{ $json.avg_logins }})\nTickets suporte: {{ $json.tickets_30d }} (média: {{ $json.avg_tickets }})\nÚltimo contacto: {{ $json.last_contact }}\nTempo resposta emails: {{ $json.avg_reply_time }}\nFeatures usadas: {{ $json.features_used }}/{{ $json.features_available }}\nPagamentos atrasados: {{ $json.late_payments }}\nMencionou concorrente: {{ $json.competitor_mention }}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.2, "maxTokens": 600 }
+      },
+      "name": "AI Churn Analysis",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.8,
+      "position": [1130, 300],
+      "credentials": { "openAiApi": { "id": "[OPENAI_CRED_ID]", "name": "OpenAI" } }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            { "leftValue": "={{ $json.risco_churn }}", "rightValue": "baixo", "operator": { "type": "string", "operation": "notEquals" } }
+          ]
+        }
+      },
+      "name": "Filter: At Risk Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "documentId": { "value": "[GOOGLE_SHEET_ID]" },
+        "sheetName": "Churn Risk Log",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "date": "={{ $now.toISO() }}",
+            "customer": "={{ $json.name }}",
+            "company": "={{ $json.company }}",
+            "mrr": "={{ $json.mrr }}",
+            "risk_level": "={{ $json.risco_churn }}",
+            "probability": "={{ $json.probabilidade_saida_90d }}",
+            "cause": "={{ $json.causa_provavel }}",
+            "action": "={{ $json.acao }}",
+            "urgency": "={{ $json.urgencia }}"
+          }
+        }
+      },
+      "name": "Log to Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1570, 200]
+    },
+    {
+      "parameters": {
+        "channel": "[SLACK_CHANNEL_SALES]",
+        "text": "=🚨 Alerta Churn: *{{ $json.name }}* ({{ $json.company }})\nRisco: {{ $json.risco_churn }} | MRR: ${{ $json.mrr }}\nCausa: {{ $json.causa_provavel }}\nAção: {{ $json.acao }}\nUrgência: {{ $json.urgencia }}"
+      },
+      "name": "Slack Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [1570, 400]
+    }
+  ],
+  "connections": {
+    "Weekly Schedule": { "main": [[{ "node": "Get Active Customers", "type": "main", "index": 0 }]] },
+    "Get Active Customers": { "main": [[{ "node": "Split Customers", "type": "main", "index": 0 }]] },
+    "Split Customers": { "main": [[{ "node": "Get Engagement Data", "type": "main", "index": 0 }]] },
+    "Get Engagement Data": { "main": [[{ "node": "AI Churn Analysis", "type": "main", "index": 0 }]] },
+    "AI Churn Analysis": { "main": [[{ "node": "Filter: At Risk Only", "type": "main", "index": 0 }]] },
+    "Filter: At Risk Only": { "main": [[{ "node": "Log to Sheets", "type": "main", "index": 0 }], [{ "node": "Slack Alert", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "ai-consulting" }, { "name": "churn-prediction" }]
+}

@@ -1,0 +1,72 @@
+{
+  "name": "AI Executive Morning Briefing",
+  "nodes": [
+    {
+      "parameters": { "rule": { "interval": [{ "field": "cronExpression", "expression": "0 7 * * 1-5" }] } },
+      "name": "Weekdays 7AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": { "method": "GET", "url": "=[KPI_DASHBOARD_API]/yesterday", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth" },
+      "name": "Get KPIs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [470, 200]
+    },
+    {
+      "parameters": { "method": "GET", "url": "=[CALENDAR_API]/today", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth" },
+      "name": "Get Calendar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [470, 400]
+    },
+    {
+      "parameters": { "mode": "combine", "combineBy": "combineAll" },
+      "name": "Merge Data",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": { "values": [
+          { "role": "system", "content": "És o assistente executivo AI de [NOME]. Gera o briefing matinal: urgente, números de ontem, agenda de hoje, emails prioritários, e o que monitorizar. Máximo 500 palavras, direto e prático." },
+          { "role": "user", "content": "=KPIs ontem: {{ JSON.stringify($json.kpis) }}\nAgenda hoje: {{ JSON.stringify($json.calendar) }}" }
+        ] },
+        "options": { "temperature": 0.4, "maxTokens": 1000 }
+      },
+      "name": "Generate Briefing",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.8,
+      "position": [910, 300],
+      "credentials": { "openAiApi": { "id": "[OPENAI_CRED_ID]", "name": "OpenAI" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=[WHATSAPP_API]/messages",
+        "sendBody": true,
+        "bodyParameters": { "parameters": [
+          { "name": "to", "value": "[EXECUTIVE_PHONE]" },
+          { "name": "text", "value": "=☀️ Bom dia, [NOME].\n\n{{ $json.briefing }}" }
+        ] }
+      },
+      "name": "Send via WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 300]
+    }
+  ],
+  "connections": {
+    "Weekdays 7AM": { "main": [[{ "node": "Get KPIs", "type": "main", "index": 0 }], [{ "node": "Get Calendar", "type": "main", "index": 0 }]] },
+    "Get KPIs": { "main": [[{ "node": "Merge Data", "type": "main", "index": 0 }]] },
+    "Get Calendar": { "main": [[{ "node": "Merge Data", "type": "main", "index": 1 }]] },
+    "Merge Data": { "main": [[{ "node": "Generate Briefing", "type": "main", "index": 0 }]] },
+    "Generate Briefing": { "main": [[{ "node": "Send via WhatsApp", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "ai-consulting" }, { "name": "executive" }]
+}

@@ -1,0 +1,61 @@
+{
+  "name": "AI Smart Stock Reorder",
+  "nodes": [
+    {
+      "parameters": { "rule": { "interval": [{ "field": "hours", "hoursInterval": 12 }] } },
+      "name": "Check Twice Daily",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=[INVENTORY_API]/products?stock_below=reorder_point",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "name": "Get Low Stock Products",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "És gestor de stock AI para [EMPRESA]. Analisa produtos com stock baixo e decide quantidades de encomenda. Considera lead time, consumo recente, sazonalidade. Responde em JSON: {\"encomendas\": [{\"produto\": \"SKU\", \"quantidade\": 0, \"fornecedor\": \"nome\", \"urgencia\": \"critica|normal\", \"justificacao\": \"motivo\"}], \"custo_total\": 0, \"resumo\": \"1 frase\"}"
+            },
+            { "role": "user", "content": "=Produtos com stock baixo:\n{{ JSON.stringify($json.products) }}" }
+          ]
+        },
+        "options": { "temperature": 0.2 }
+      },
+      "name": "AI Reorder Decision",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.8,
+      "position": [690, 300],
+      "credentials": { "openAiApi": { "id": "[OPENAI_CRED_ID]", "name": "OpenAI" } }
+    },
+    {
+      "parameters": {
+        "channel": "[SLACK_OPS]",
+        "text": "=📦 Reposição de Stock Necessária\n{{ $json.resumo }}\n\nEncomendas sugeridas:\n{{ $json.encomendas.map(e => '• ' + e.produto + ': ' + e.quantidade + ' un (' + e.urgencia + ')').join('\\n') }}\n\nCusto total: ${{ $json.custo_total }}\n\n✅ Aprovar? Reagir com ✅ para auto-enviar ao fornecedor"
+      },
+      "name": "Slack Approval",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [910, 300]
+    }
+  ],
+  "connections": {
+    "Check Twice Daily": { "main": [[{ "node": "Get Low Stock Products", "type": "main", "index": 0 }]] },
+    "Get Low Stock Products": { "main": [[{ "node": "AI Reorder Decision", "type": "main", "index": 0 }]] },
+    "AI Reorder Decision": { "main": [[{ "node": "Slack Approval", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "ai-consulting" }, { "name": "operations" }]
+}

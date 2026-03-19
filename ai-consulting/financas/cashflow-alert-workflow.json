@@ -1,0 +1,73 @@
+{
+  "name": "AI Cash Flow Prediction & Alert",
+  "nodes": [
+    {
+      "parameters": { "rule": { "interval": [{ "field": "days", "daysInterval": 1 }] } },
+      "name": "Daily Check",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=[BILLING_API]/invoices?status=pending&due_within=90d",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "name": "Get Pending Invoices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "És analista financeiro de [EMPRESA]. Analisa faturas pendentes e prevê cash flow. Responde em JSON: {\"semanas_criticas\": [{\"semana\": \"data\", \"deficit\": valor, \"causa\": \"desc\"}], \"clientes_risco\": [{\"nome\": \"X\", \"valor\": 0, \"dias_atraso_previsto\": 0, \"acao\": \"desc\"}], \"resumo\": \"1 parágrafo\"}"
+            },
+            { "role": "user", "content": "=Faturas pendentes:\n{{ JSON.stringify($json.invoices) }}" }
+          ]
+        },
+        "options": { "temperature": 0.2, "maxTokens": 800 }
+      },
+      "name": "AI Cash Flow Analysis",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.8,
+      "position": [690, 300],
+      "credentials": { "openAiApi": { "id": "[OPENAI_CRED_ID]", "name": "OpenAI" } }
+    },
+    {
+      "parameters": {
+        "conditions": { "conditions": [
+          { "leftValue": "={{ $json.semanas_criticas.length }}", "rightValue": 0, "operator": { "type": "number", "operation": "larger" } }
+        ] }
+      },
+      "name": "Has Critical Weeks?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "channel": "[SLACK_FINANCE]",
+        "text": "=💰 Alerta Cash Flow\n{{ $json.resumo }}\n\nSemanas críticas: {{ $json.semanas_criticas.map(s => s.semana + ': déficit ' + s.deficit).join('\\n') }}"
+      },
+      "name": "Slack Alert CFO",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [1130, 300]
+    }
+  ],
+  "connections": {
+    "Daily Check": { "main": [[{ "node": "Get Pending Invoices", "type": "main", "index": 0 }]] },
+    "Get Pending Invoices": { "main": [[{ "node": "AI Cash Flow Analysis", "type": "main", "index": 0 }]] },
+    "AI Cash Flow Analysis": { "main": [[{ "node": "Has Critical Weeks?", "type": "main", "index": 0 }]] },
+    "Has Critical Weeks?": { "main": [[{ "node": "Slack Alert CFO", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "ai-consulting" }, { "name": "finance" }]
+}

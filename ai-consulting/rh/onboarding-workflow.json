@@ -1,0 +1,89 @@
+{
+  "name": "AI Autonomous Onboarding",
+  "nodes": [
+    {
+      "parameters": { "httpMethod": "POST", "path": "new-employee", "responseMode": "responseNode" },
+      "name": "Webhook: New Employee",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Gera uma mensagem de boas-vindas personalizada para um novo funcionário de [EMPRESA]. Inclui: saudação calorosa com nome, cargo e equipa, lista de acessos que vai receber hoje, agenda da primeira semana, e uma frase de encorajamento. Tom: caloroso e profissional. Idioma: português."
+            },
+            {
+              "role": "user",
+              "content": "=Nome: {{ $json.body.name }}\nCargo: {{ $json.body.role }}\nEquipa: {{ $json.body.team }}\nGestor: {{ $json.body.manager }}\nData início: {{ $json.body.start_date }}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.7, "maxTokens": 1000 }
+      },
+      "name": "Generate Welcome Message",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.8,
+      "position": [470, 300],
+      "credentials": { "openAiApi": { "id": "[OPENAI_CRED_ID]", "name": "OpenAI" } }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "toEmail": "={{ $json.body.email }}",
+        "subject": "Bem-vindo/a à [EMPRESA]! 🎉",
+        "emailType": "html",
+        "message": "={{ $json.welcome_message }}"
+      },
+      "name": "Send Welcome Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [690, 200]
+    },
+    {
+      "parameters": {
+        "channel": "[SLACK_CHANNEL_TEAM]",
+        "text": "=👋 Novo membro na equipa! *{{ $json.body.name }}* junta-se como {{ $json.body.role }} na equipa {{ $json.body.team }}. Primeiro dia: {{ $json.body.start_date }}. Dêem-lhe as boas-vindas!"
+      },
+      "name": "Announce on Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [690, 400]
+    },
+    {
+      "parameters": {
+        "documentId": { "value": "[GOOGLE_SHEET_ID]" },
+        "sheetName": "Onboarding Tracker",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "name": "={{ $json.body.name }}",
+            "role": "={{ $json.body.role }}",
+            "team": "={{ $json.body.team }}",
+            "start_date": "={{ $json.body.start_date }}",
+            "welcome_sent": "={{ $now.toISO() }}",
+            "day1_checklist": "pending",
+            "week1_checklist": "pending",
+            "month1_checklist": "pending"
+          }
+        }
+      },
+      "name": "Track in Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [910, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: New Employee": { "main": [[{ "node": "Generate Welcome Message", "type": "main", "index": 0 }]] },
+    "Generate Welcome Message": { "main": [[{ "node": "Send Welcome Email", "type": "main", "index": 0 }], [{ "node": "Announce on Slack", "type": "main", "index": 0 }]] },
+    "Send Welcome Email": { "main": [[{ "node": "Track in Sheets", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "ai-consulting" }, { "name": "rh-onboarding" }]
+}

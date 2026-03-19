@@ -132,6 +132,26 @@ Log (Google Sheets / Supabase — audit trail)
 | IT & Infrastructure | 08, 09 |
 | Marketing | 02 (partner/affiliate) |
 
+## 🧠 AI Consulting Templates (`ai-consulting/`)
+
+Ready-to-use system prompts and n8n workflow templates for enterprise AI implementation across **10 departments**. Each prompt is production-ready with placeholders for client customization.
+
+| Department | Prompts | Workflows | Focus |
+|---|---|---|---|
+| [Suporte Disruptivo](ai-consulting/suporte-disruptivo/) | 3 | 2 | Emotion detection, proactive outreach, quality analysis |
+| [Comercial/Vendas](ai-consulting/comercial/) | 4 | 1 | Sales coaching, auto-proposal, churn prediction, mystery shopper |
+| [RH](ai-consulting/rh/) | 3 | 1 | Turnover prediction, autonomous onboarding, continuous evaluation |
+| [Jurídico](ai-consulting/juridico/) | 3 | — | Regulatory monitor, compliance audit, due diligence |
+| [Finanças](ai-consulting/financas/) | 3 | 1 | Cash flow prediction, fraud detection, narrative reports |
+| [Operações](ai-consulting/operacoes/) | 4 | 1 | Smart reorder, route optimization, predictive maintenance |
+| [Marketing](ai-consulting/marketing/) | 4 | — | Hyper-segmentation, dynamic pricing, brand sentiment |
+| [Gestão Executiva](ai-consulting/gestao-executiva/) | 4 | 1 | Morning briefing, scenario simulation, board reports |
+| [TI](ai-consulting/ti/) | 3 | — | Auto-healing, predictive security, license optimization |
+| [Formação](ai-consulting/formacao/) | 3 | — | AI mentor, scenario training, knowledge capture |
+| **Total** | **34** | **7** | |
+
+→ See [`ai-consulting/README.md`](ai-consulting/README.md) for full documentation.
+
 ## 📄 License
 
 MIT License — free to use, modify, and distribute.
